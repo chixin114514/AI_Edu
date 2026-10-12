@@ -10,10 +10,10 @@ test('frontend renders every view with real backend responses and completes sugg
   const nodes=new Map();const node=selector=>{if(!nodes.has(selector))nodes.set(selector,{innerHTML:'',textContent:'',classList:{add(){},remove(){},toggle(){}},addEventListener(){},setAttribute(){},showModal(){},close(){}});return nodes.get(selector);};
   const local=new Map(),document={querySelector:node,querySelectorAll:()=>[],addEventListener(){}};
   class FakeSensors extends EventTarget {constructor(){super();this.samples=[];}features(){return {};}stop(){} }
-  const context=vm.createContext({console,document,window:{addEventListener(){},scrollTo(){},isSecureContext:false},navigator:{},location:{hash:''},history:{replaceState(){}},localStorage:{getItem:k=>local.get(k)??null,setItem:(k,v)=>local.set(k,v),removeItem:k=>local.delete(k)},setTimeout:()=>0,clearTimeout(){},Sensors:FakeSensors,URL,Blob,fetch:async(url,options={})=>{
+  const context=vm.createContext({console,document,window:{addEventListener(){},scrollTo(){},isSecureContext:false},navigator:{},location:{hash:''},history:{replaceState(){}},localStorage:{getItem:k=>local.get(k)??null,setItem:(k,v)=>local.set(k,v),removeItem:k=>local.delete(k)},setTimeout:()=>0,clearTimeout(){},Sensors:FakeSensors,routeMapMarkup:()=>'<div>高德地图</div>',mountRouteMaps(){},destroyRouteMaps(){},URL,Blob,fetch:async(url,options={})=>{
     const r=await dispatch(server,url,options.body?JSON.parse(options.body):undefined,{cookie,...options.headers});cookie=r.headers['set-cookie']?.split(';')[0]||cookie;return {ok:r.status<400,json:async()=>r.body};
   }});
-  const source=(await readFile(new URL('../public/app.js',import.meta.url),'utf8')).replace("import { Sensors } from './sensors.js';",'').replace('\ninit();','\n');
+  const source=(await readFile(new URL('../public/app.js',import.meta.url),'utf8')).replace("import { routeMapMarkup, mountRouteMaps, destroyRouteMaps } from './route-map.js';",'').replace("import { Sensors } from './sensors.js';",'').replace('\ninit();','\n');
   vm.runInContext(source,context);const run=s=>vm.runInContext(s,context);
   await run('init()');assert.match(node('#app').innerHTML,/定制你的旅程/);
   await run(`state.trip=await api('/trip/plan',{city:'杭州',date:'2026-10-13',days:1,budget:300,walk_limit_km:6,interests:['自然'],start_time:'09:00',end_time:'18:00',companion:'独自',model_consent:false})`.replace('state.trip=await','(async()=>state.trip=await')+')()');

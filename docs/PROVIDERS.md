@@ -82,3 +82,23 @@ npm run mcp:amap
 - [和风旧版城市实况接口](https://dev.qweather.com/en/docs/api/weather/weather-now-webapi-v7/)
 - [高德步行路径规划](https://lbs.amap.com/api/webservice/guide/api/direction/)
 - [Node.js代理支持](https://nodejs.org/learn/http/enterprise-network-configuration)
+
+### 高德人均消费与评分
+
+自动城市路线检索通过地点搜索 2.0 的 `show_fields=business` 读取 `business.cost` 与 `business.rating`，不额外调用模型或餐饮推荐服务。归一化后的 `per_capita_cost`（元/人）、`rating`（5 分制）、`commerce_source`、`commerce_fetched_at` 随 POI 存入行程和路线库，并显示在行程节点、餐厅列表及用餐改线建议中。时间表示本次获取时间，不是高德内容更新时间。
+
+空值、零值、负值及无效数值显示“暂无”；不生成评价正文。参考人均独立于 `price`，不作为门票或确定费用计入总价。已有行程保留原始快照，重新生成行程后获取新字段。
+
+字段说明：https://lbs.amap.com/api/webservice/guide/api/newpoisearch
+
+### 真实路线地图
+
+`GET /api/trip/{id}/map?day=1&zoom=14&focus=0` 使用当前浏览器所属行程生成底图视图。`zoom`（3—17）和 `focus`（从 0 开始的地点序号）可省略，默认包含当天所有地点与实况路径。使用现有 Web 服务 Key 调用高德 `/v3/staticmap`，返回底图 data URL、GCJ-02 中心点和缩放级别；密钥、上游 URL 不发往浏览器。每个浏览器限 60 次/分钟，服务端底图缓存最多 64 张、5 分钟。
+
+前端按 Web Mercator 投影叠加已有 GCJ-02 步行路径，不再次偏移坐标，不连接缺失路段。地图保留高德原图署名与审图号。切换页面取消过时请求，失败提供重试与地点跳转。它是可切换视图的真实静态底图，不使用 JS SDK，不提供拖拽或定位追踪。
+
+官方文档：https://lbs.amap.com/api/webservice/guide/api/staticmaps
+
+### 目的地选择
+
+目的地下拉框通过 `/api/cities` 读取高德全国行政区划（`keywords=中国&subdistrict=2&extensions=base`），按省份分组。自动定位会更新选中项，保留日期、预算等输入；完整列表加载失败时可用常用城市列表。城市列表沿用地图请求缓存与限流队列。

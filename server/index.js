@@ -4,9 +4,10 @@ import { readFile } from 'node:fs/promises';
 import { resolve, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createStore } from './store.js';
+import { routeMap } from './maps.js';
 import { pois, byId } from './pois.js';
 import { createPlan, evaluate, ensure, HttpError, clock, minutes, schedule, approximateDistance } from './planner.js';
-import { decision, liveMode, providerFlags, providerStatus, resolveLocation } from './providers.js';
+import { decision, liveMode, providerFlags, providerStatus, resolveLocation, cityOptions } from './providers.js';
 const root=fileURLToPath(new URL('../public/',import.meta.url));
 const mime={'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8','.svg':'image/svg+xml','.json':'application/json'};
 const safeEqual=(a,b)=>{const x=Buffer.from(a),y=Buffer.from(b);return x.length===y.length&&timingSafeEqual(x,y);};
@@ -49,6 +50,10 @@ export function createApp({database=process.env.DATABASE_PATH||'./data/manxing.s
       if(req.method==='POST') {lockKey=owner;ensure(!locks.has(lockKey),'上一操作仍在处理中，请稍后重试',409);locks.add(lockKey);acquired=true;}
       if(path==='/api/config'&&req.method==='GET')return send({data_mode:liveMode()?'live':'demo',dynamic_planning:liveMode(),city:'杭州',providers:providerFlags(),provider_status:providerStatus(),health_notice:'仅辅助调整旅行节奏，不作医学判断。',privacy:'心率原始值留在浏览器；服务端仅保存事件类型、累计步行和确认记录，不保存上传的健康特征。'});
       if(path==='/api/pois'&&req.method==='GET')return send({pois});
+      if(path==='/api/cities'&&req.method==='GET'){
+        let result;try{result=await cityOptions();}catch{throw new HttpError(503,'完整城市列表暂不可用，请选择常用城市或使用自动定位');}
+        return send(result);
+      }
       if(path==='/api/location/resolve'&&req.method==='POST'){
         ensure(b.coordinate_system==='WGS84','定位坐标须为浏览器提供的WGS84');
         for(const [key,min,max] of [['lat',-90,90],['lng',-180,180],['accuracy',0,20000000]])ensure(typeof b[key]==='number'&&Number.isFinite(b[key])&&b[key]>=min&&b[key]<=max,'定位数据无效');
@@ -67,6 +72,18 @@ export function createApp({database=process.env.DATABASE_PATH||'./data/manxing.s
       if(path==='/api/trip/plan'&&req.method==='POST'){
         let trip;try{trip=await createPlan(b);}catch(e){if(e instanceof HttpError)throw e;throw new HttpError(503,'地图服务不可用，未生成未经验证的实况路线；请检查配置或使用演示模式。');}
         return send(put('trip',trip),201);
+      }
+      if(/^\/api\/trip\/[^/]+\/map$/.test(path)&&req.method==='GET'){
+        const trip=get('trip',path.split('/')[3]),q=new URL(req.url,'http://local').searchParams;
+        const day=Number(q.get('day')||1),zoom=q.has('zoom')?Number(q.get('zoom')):undefined,focus=q.has('focus')?Number(q.get('focus')):undefined;
+        ensure(Number.isInteger(day)&&day>=1&&day<=trip.days.length,'旅行日无效');
+        const stops=trip.days[day-1].stops;
+        ensure(zoom===undefined||(Number.isInteger(zoom)&&zoom>=3&&zoom<=17),'地图缩放级别无效');
+        ensure(focus===undefined||(Number.isInteger(focus)&&focus>=0&&focus<stops.length),'地点无效');
+        const id='map:'+owner,now=Date.now();let limit=limits.get(id);if(!limit||now-limit.at>60000)limit={at:now,count:0};
+        ensure(++limit.count<=60,'地图操作过于频繁，请稍后重试',429);limits.set(id,limit);
+        let image;try{image=await routeMap(stops,{zoom,focus});}catch{throw new HttpError(503,'地图暂时无法加载，请稍后重试');}
+        return send(image);
       }
       if(/^\/api\/trip\/[^/]+$/.test(path)&&req.method==='GET')return send(get('trip',path.split('/')[3]));
       if(path==='/api/session/start'&&req.method==='POST'){

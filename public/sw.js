@@ -1,5 +1,5 @@
-const CACHE='manxing-shell-v6';
-const FILES=['/','/index.html','/app.js','/sensors.js','/style.css','/lake.svg','/favicon.svg'];
+const CACHE='manxing-shell-v9';
+const FILES=['/','/index.html','/app.js','/route-map.js','/map-geometry.js','/sensors.js','/style.css','/lake.svg','/favicon.svg'];
 self.addEventListener('install',event=>event.waitUntil(caches.open(CACHE).then(cache=>cache.addAll(FILES))));
 self.addEventListener('activate',event=>event.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>k.startsWith('manxing-shell-')&&k!==CACHE).map(k=>caches.delete(k)))).then(()=>self.clients.claim())));
 self.addEventListener('fetch',event=>{

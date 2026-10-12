@@ -130,3 +130,11 @@ DeepSeek仍只生成获授权的非健康行程说明，不自动接收低置信
 成功后地点快照和路线包随行程保存在SQLite；`GET /route-packs` 返回 `{"packs":[{...route_pack,"trip_id":"…"}]}`，按城市保留最新摘要；历史行程仍能查看。身份隔离、删除规则与行程一致。途中改线使用行程内的同城地点快照，饥饿事件仅考虑当前位置节点1.5公里直线范围内的餐饮候选，再用地图测算；没有合适候选时缩短路线并建议休息。
 
 参考：[高德POI 2.0](https://lbs.amap.com/api/webservice/guide/api-advanced/newpoisearch)、[行政区域查询](https://lbs.amap.com/api/webservice/guide/api/district)。
+
+### 行程地图
+
+`GET /api/trip/{id}/map?day=1&zoom=14&focus=0`：限当前浏览器拥有的行程；默认 `day=1`，省略 `zoom` / `focus` 时自动显示全程。返回 `{image, view: {center, zoom, width, height}, source}`，image 为后端取得的高德底图 data URL。参数错误 400、非本人行程 404、超过每分钟 60 次 429、底图不可用 503。
+
+### 城市下拉选项
+
+`GET /api/cities`：返回 `{cities: [{name, province, adcode}], source}`。实况模式从高德行政区划接口读取城市与直辖市，演示模式仅返回杭州。上游失败返回 503，前端保留常用城市和自动定位入口。

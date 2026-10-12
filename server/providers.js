@@ -94,6 +94,19 @@ export async function resolveLocation({lat,lng,accuracy}) {
       source:'高德逆地理编码',resolved_at:new Date().toISOString()};
   });
 }
+export async function cityOptions() {
+  if(!liveMode())return {cities:[{name:'杭州市',province:'浙江省',adcode:'330100'}],source:'演示城市'};
+  const d=await amap('/v3/config/district',{keywords:'中国',subdistrict:2,extensions:'base'});
+  const provinces=d.districts?.find(p=>p.level==='country')?.districts;
+  if(!Array.isArray(provinces))throw providerError('INVALID_RESPONSE');
+  const cities=new Map();
+  for(const province of provinces){
+    const options=['北京市','天津市','上海市','重庆市'].includes(province.name)?[province]:(province.districts||[]).filter(p=>p.level==='city');
+    for(const p of options)if(typeof p.name==='string'&&/^[\p{Script=Han}·]{2,30}$/u.test(p.name)&&/^\d{6}$/.test(p.adcode))cities.set(p.adcode,{name:p.name,province:province.name,adcode:p.adcode});
+  }
+  if(!cities.size)throw providerError('INVALID_RESPONSE');
+  return {cities:[...cities.values()].sort((a,b)=>a.adcode.localeCompare(b.adcode)),source:'高德行政区划'};
+}
 export async function cityRegion(name) {
   return monitored('maps',async()=>{
     const d=await amap('/v3/config/district',{keywords:name,subdistrict:0,extensions:'base'});
@@ -104,6 +117,11 @@ export async function cityRegion(name) {
     if(!/^\d{6}$/.test(r.adcode)||coords.length!==2||Math.abs(coords[0])>180||Math.abs(coords[1])>90)throw providerError('INVALID_RESPONSE');
     return {name:r.name,adcode:r.adcode,center:{lng:coords[0],lat:coords[1]}};
   });
+}
+function optionalMetric(value,max=Infinity) {
+  if(!['number','string'].includes(typeof value)||String(value).trim()==='')return null;
+  const n=Number(value);
+  return Number.isFinite(n)&&n>0&&n<=max?n:null;
 }
 export function normalizePoi(p,region,index=0) {
   if(typeof p.id!=='string'||!p.id||typeof p.name!=='string'||typeof p.location!=='string')return null;
@@ -120,6 +138,8 @@ export function normalizePoi(p,region,index=0) {
   // A current-day string is not evidence of opening on a future travel date.
   return {id:p.id,name:p.name.slice(0,150),lng,lat,coordinate_system:'GCJ-02',city:region.name,adcode:p.adcode,
     category,indoor,indoor_inferred:indoor,duration_min:category==='美食'?60:indoor?60:45,price:null,open:null,close:null,closed_days:[],opening_text:opening.slice(0,400),
+    per_capita_cost:optionalMetric(p.business?.cost),rating:optionalMetric(p.business?.rating,5),
+    commerce_source:'高德地图',commerce_fetched_at:new Date().toISOString(),
     reservation:'预约、票价与旅行当日开放情况需出发前核实',accessibility:'待核实',slope:'unknown',
     description:typeof p.address==='string'?p.address.slice(0,250):type,
     source:'高德POI检索',source_url:`https://uri.amap.com/marker?position=${lng},${lat}&name=${encodeURIComponent(p.name)}&coordinate=gaode&callnative=0`,

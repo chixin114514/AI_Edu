@@ -13,7 +13,7 @@ function setup(t,{empty=false,mapFailure=false,huge=false}={}){
   if(u.pathname==='/v3/config/district'){const name=u.searchParams.get('keywords');d={districts:name.includes('上海')?[{name:'上海市',adcode:'310000',level:'province',center:'121.47,31.23'}]:[]};}
   else if(u.pathname==='/v5/place/text'){
    assert.equal(u.searchParams.get('region'),'310000');assert.equal(u.searchParams.get('city_limit'),'true');
-   d={pois:empty?[]:Array.from({length:18},(_,i)=>({id:'SH'+i,name:i>=15?'上海餐厅'+i:i>=11?'上海博物馆'+i:'上海公园'+i,type:i>=15?'餐饮服务':i>=11?'科教文化服务;博物馆':'风景名胜;公园广场;公园',typecode:i>=15?'050000':i>=11?'140100':'110101',adcode:'310101',location:`${121.47+i*.001},31.23`,address:'上海测试街道',business:{opentime_today:'09:00-17:00',cost:'100'}}))};
+   d={pois:empty?[]:Array.from({length:18},(_,i)=>({id:'SH'+i,name:i>=15?'上海餐厅'+i:i>=11?'上海博物馆'+i:'上海公园'+i,type:i>=15?'餐饮服务':i>=11?'科教文化服务;博物馆':'风景名胜;公园广场;公园',typecode:i>=15?'050000':i>=11?'140100':'110101',adcode:'310101',location:`${121.47+i*.001},31.23`,address:'上海测试街道',business:{opentime_today:'09:00-17:00',cost:'100',rating:'4.5'}}))};
   }else if(u.pathname==='/v3/direction/walking'){
    if(mapFailure)throw Error('secret upstream failure');
    d={route:{paths:[{distance:huge?'99999':'200',duration:'180',steps:[]}]}};
@@ -27,11 +27,11 @@ function setup(t,{empty=false,mapFailure=false,huge=false}={}){
 test('arbitrary city uses real POI results, route distances, matching weather and honest unknown costs',async t=>{
  const {request,calls}=setup(t),r=await request('/trip/plan',input);assert.equal(r.status,201);const p=r.body;
  assert.equal(p.preferences.city,'上海市');assert.equal(p.data_mode,'live');assert.equal(p.route_pack.poi_count,18);assert.equal(p.days[0].stops.length,6);assert.equal(p.days[0].distance_m,1000);assert.equal(p.days[0].unknown_cost_count,6);assert.match(p.weather.source,/上海/);
- for(const stop of p.days[0].stops){assert.ok(stop.id.startsWith('SH'));assert.equal(stop.price,null);assert.equal(stop.open,null);assert.equal(stop.close,null);assert.match(stop.source_url,/uri.amap.com/);assert.equal(stop.leg.source,stop===p.days[0].stops[0]?'起点':'高德步行路径规划');}
+ for(const stop of p.days[0].stops){assert.ok(stop.id.startsWith('SH'));assert.equal(stop.price,null);assert.equal(stop.per_capita_cost,100);assert.equal(stop.rating,4.5);assert.equal(stop.commerce_source,'高德地图');assert.equal(stop.open,null);assert.equal(stop.close,null);assert.match(stop.source_url,/uri.amap.com/);assert.equal(stop.leg.source,stop===p.days[0].stops[0]?'起点':'高德步行路径规划');}
  assert.equal(calls.filter(u=>u.pathname==='/v5/place/text').length,3);assert.ok(!JSON.stringify(p).includes('rest-gushan'));
 });
 test('generated route library survives reads and is isolated by browser owner',async t=>{
- const {request,app}=setup(t);const r=await request('/trip/plan',input);const packs=await request('/route-packs');assert.equal(packs.body.packs[0].trip_id,r.body.id);assert.equal(packs.body.packs[0].city,'上海市');assert.deepEqual((await dispatch(app,'/api/route-packs')).body.packs,[]);
+ const {request,app}=setup(t);const r=await request('/trip/plan',input);const packs=await request('/route-packs');assert.equal(packs.body.packs[0].trip_id,r.body.id);assert.equal(packs.body.packs[0].city,'上海市');const saved=(await request('/trip/'+r.body.id)).body;assert.equal(saved.poi_catalog.find(p=>p.category==='美食').per_capita_cost,100);assert.equal(saved.poi_catalog[0].rating,4.5);assert.deepEqual((await dispatch(app,'/api/route-packs')).body.packs,[]);
  await request('/trip/plan',input);assert.equal((await request('/route-packs')).body.packs.length,1);await request('/privacy/delete',{confirm:true});assert.deepEqual((await request('/route-packs')).body.packs,[]);
 });
 test('two-day generated routes have no duplicate main stops and obey limits',async t=>{
@@ -61,4 +61,16 @@ test('POI normalization filters foreign results, malformed coordinates and acces
  const region={name:'上海市',adcode:'310000'},p={id:'P1',name:'公园',location:'121,31',adcode:'310101',type:'公园',typecode:'110101',business:{cost:'100',opentime_today:'09:00-17:00'}};
  for(const patch of [{adcode:'330106'},{location:'NaN,31'},{location:',31'},{name:'公园出入口'}])assert.equal(normalizePoi({...p,...patch},region),null);
  const v=normalizePoi(p,region);assert.equal(v.price,null);assert.equal(v.open,null);assert.match(v.opening_text,/09:00/);
+});
+
+test('invalid commercial data stays unknown and reference spend never becomes a ticket price',()=>{
+ const region={name:'上海市',adcode:'310000'},p={id:'R1',name:'餐厅',location:'121,31',adcode:'310101',type:'餐饮服务',typecode:'050000'};
+ for(const value of [undefined,null,[],{},'', ' ',true,'未知','NaN',Infinity,-1,0]){
+  const result=normalizePoi({...p,business:{cost:value,rating:value}},region);
+  assert.equal(result.per_capita_cost,null);assert.equal(result.rating,null);assert.equal(result.price,null);
+ }
+ const result=normalizePoi({...p,business:{cost:'58.50',rating:'4.5'}},region);
+ assert.equal(result.per_capita_cost,58.5);assert.equal(result.rating,4.5);assert.equal(result.price,null);
+ assert.equal(normalizePoi({...p,business:{rating:'5.1'}},region).rating,null);
+ assert.equal(normalizePoi({...p,business:{rating:'5'}},region).rating,5);
 });
