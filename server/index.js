@@ -1,4 +1,6 @@
 import http from 'node:http';
+import https from 'node:https';
+import { loadTls } from './tls.js';
 import { randomUUID, randomBytes, timingSafeEqual } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { resolve, extname } from 'node:path';
@@ -16,10 +18,10 @@ async function body(req){
   let s='';for await(const c of req){s+=c;ensure(Buffer.byteLength(s)<=32768,'请求过大',413);}
   try{const b=JSON.parse(s);ensure(b&&typeof b==='object'&&!Array.isArray(b),'请求须为对象');return b;}catch(e){if(e instanceof HttpError)throw e;throw new HttpError(400,'JSON格式错误');}
 }
-export function createApp({database=process.env.DATABASE_PATH||'./data/manxing.sqlite'}={}){
+export function createApp({database=process.env.DATABASE_PATH||'./data/manxing.sqlite',tls}={}){
   const store=createStore(database), limits=new Map();
   const locks=new Set();
-  const app=http.createServer(async(req,res)=>{
+  const handler=async(req,res)=>{
     res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Referrer-Policy','no-referrer');
     res.setHeader('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'");
     res.setHeader('Permissions-Policy','geolocation=(self), bluetooth=(self), accelerometer=(self)');
@@ -35,10 +37,10 @@ export function createApp({database=process.env.DATABASE_PATH||'./data/manxing.s
       }
       const cookies=req.headers.cookie||'';
       let owner=cookies.match(/(?:^|;\s*)mx_owner=([a-f0-9]{48})(?:;|$)/)?.[1];
-      if(!owner){owner=randomBytes(24).toString('hex');res.setHeader('Set-Cookie',`mx_owner=${owner}; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000${process.env.COOKIE_SECURE==='true'?'; Secure':''}`);}
+      if(!owner){owner=randomBytes(24).toString('hex');res.setHeader('Set-Cookie',`mx_owner=${owner}; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000${req.socket.encrypted||process.env.COOKIE_SECURE==='true'?'; Secure':''}`);}
       if(req.method!=='GET'){
         const origin=req.headers.origin;
-        ensure(!origin||new URL(origin).host===req.headers.host,'跨站请求已拒绝',403);
+        ensure(!origin||(new URL(origin).host===req.headers.host&&(!req.socket.encrypted||new URL(origin).protocol==='https:')),'跨站请求已拒绝',403);
         const now=Date.now(),ip=req.socket.remoteAddress;let l=limits.get(ip);if(!l||now-l.at>60000)l={at:now,count:0};
         ensure(++l.count<=120,'请求过于频繁，请稍后重试',429);limits.set(ip,l);
         if(limits.size>10000)limits.clear();
@@ -170,12 +172,15 @@ export function createApp({database=process.env.DATABASE_PATH||'./data/manxing.s
       throw new HttpError(404,'接口不存在');
     }catch(e){send({error:e.status?e.message:'服务暂时不可用，请稍后重试'},e.status||500);if(!e.status)console.error('Request failed:',e.name);}
     finally{if(acquired)locks.delete(lockKey);}
-  });
+  };
+  const app=tls?https.createServer({...tls,minVersion:'TLSv1.2'},handler):http.createServer(handler);
   app.on('close',()=>store.close());return app;
 }
 if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)){
-  const app=createApp(),port=Number(process.env.PORT||3000),host=process.env.HOST||'127.0.0.1';
-  app.on('error',error=>{console.error(error.code==='EADDRINUSE'?'端口已占用，请修改PORT。':error.code==='EPERM'?'当前运行环境禁止监听端口，请在允许运行本地服务的终端启动。':error.message);process.exitCode=1;});
-  app.listen(port,host,()=>console.log(`慢行 is running at http://${host}:${port}`));
-  for(const sig of ['SIGINT','SIGTERM'])process.on(sig,()=>app.close(()=>process.exit(0)));
+  try{
+    const tls=await loadTls(),app=createApp({tls}),port=Number(process.env.PORT||3000),host=process.env.HOST||'127.0.0.1';
+    app.on('error',error=>{console.error(error.code==='EADDRINUSE'?'端口已占用，请修改PORT。':error.code==='EPERM'?'当前运行环境禁止监听端口，请在允许运行本地服务的终端启动。':error.message);process.exitCode=1;});
+    app.listen(port,host,()=>console.log(`慢行 is running at ${tls?'https':'http'}://${host.includes(':')?'['+host+']':host}:${port}`));
+    for(const sig of ['SIGINT','SIGTERM'])process.on(sig,()=>app.close(()=>process.exit(0)));
+  }catch(error){console.error('启动失败：',error.message);process.exitCode=1;}
 }

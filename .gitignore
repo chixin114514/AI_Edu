@@ -8,3 +8,11 @@ artifacts/
 *.log
 .DS_Store
 Thumbs.db
+certs/
+.manxing-tls-*/
+*.pem
+*.key
+*.crt
+*.csr
+*.p12
+*.pfx
