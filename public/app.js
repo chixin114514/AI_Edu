@@ -5,7 +5,7 @@ const $=s=>document.querySelector(s),$$=s=>[...document.querySelectorAll(s)];
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fallbackRegions=[['浙江省','杭州市','宁波市'],['北京市','北京市'],['上海市','上海市'],['广东省','广州市','深圳市'],['四川省','成都市'],['重庆市','重庆市'],['江苏省','南京市','苏州市']].map(([name,...cities])=>({name,cities:cities.map(name=>({name,districts:[]}))}));
 const draft=readDraft();
-const state={page:'plan',draft,planPending:false,planError:'',planConsent:false,planProvince:draft.province,planCity:draft.city,planDistrict:draft.district_adcode,regions:fallbackRegions,regionsReady:false,regionError:false,trip:null,session:null,suggestion:null,day:1,config:null,pois:[],trips:[],interests:draft.interests,sensor:{},watchPairing:null,watchPending:false,location:null,locationMessage:'',locating:false,user:null,authMode:'login',authChecked:false,offline:false,planStartPoint:null,planEndPoint:null,picker:null,transit:{from:null,to:null,result:null,error:'',loading:false},elevation:{loading:false,data:null,error:''}};
+const state={page:'plan',draft,planPending:false,planError:'',planConsent:false,planProvince:draft.province,planCity:draft.city,planDistrict:draft.district_adcode,regions:fallbackRegions,regionsReady:false,regionError:false,trip:null,session:null,suggestion:null,day:1,config:null,pois:[],trips:[],interests:draft.interests,sensor:{},watchPairing:null,watchPending:false,location:null,locationMessage:'',locating:false,user:null,authMode:'login',authChecked:false,offline:false,planStartPoint:null,planEndPoint:null,picker:null,providerTests:{},providerTesting:null,transit:{from:null,to:null,result:null,error:'',loading:false},elevation:{loading:false,data:null,error:''}};
 applyDestination(draft.province,draft.city,draft.district_adcode,draft.district);
 const sensors=new Sensors();
 let toastTimer,renderVersion=0,lastStateAt=0,locationRequest=0,destinationRevision=0,accountRevision=0,watchAttempt=0;
@@ -64,6 +64,7 @@ function updateAccountUI(){
   $('#logout-button').hidden=!state.user;
 }
 async function switchAccount(user){
+  state.providerTests={};state.providerTesting=null;
   accountRevision++;cancelPendingWatch();state.watchPairing=null;closeModal();renderVersion++;state.planPending=false;state.planError='';state.planConsent=false;state.user=user;state.trip=null;state.trips=[];state.session=null;state.suggestion=null;
   destroyRouteMaps();sensors.stop();clearLocation();
   localStorage.removeItem('mx-trip');localStorage.removeItem('mx-trip-owner');localStorage.removeItem('mx-session');
@@ -391,11 +392,26 @@ function journeyPage(){
   </div><aside class="journey-aside"><details class="device-details"><summary><span>连接设备，感受你的节奏<small>可选 · 无设备时使用手动反馈</small></span><span class="expand-mark" aria-hidden="true">＋</span></summary>${sensorCard()}<p class="fineprint">模型授权：${s.model_consent?'已开启':'未开启'}。蓝牙心率在本页读取；Apple Watch经单独授权后临时转发。仅派生特征会按模型授权参与判断。结束会话可撤回本次授权。阈值未经临床验证，不用于诊断。</p></details><section class="card preview-card"><div class="preview-top"><div class="card-head"><h2>今天的方向</h2>${badge('高德地图')}</div></div>${mapView(d.stops)}</section></aside></div>`;
 }
 async function reportPage(){if(!state.trip)return empty('把今天的风景，留在手记里','完成一次漫游后，这里会记录你的路线与每一次选择。');const r=await api(`/trip/${state.trip.id}/report`);return heading('MEMORIES, AT YOUR PACE','走过的路，都算数。',r.finished?'这段旅程已经结束，谢谢你和慢行一起出发。':'这是当前行程的即时记录，结束后将成为完整手记。',`<button class="secondary" id="export-report">↓ 导出手记</button>`)+stats([['已打卡地点',`${r.visited_stops} / ${r.total_stops}`,'来自手动打卡'],['步行估计',`${r.walked_km.toFixed(2)} km`,'仅已上报的步数推算'],['接受调整',`${r.accepted} 次`,'用户主动确认'],['保留原路线',`${r.rejected} 次`,'尊重你的每个选择']])+`<div class="layout"><section class="card report-hero"><p class="eyebrow">A DAY WELL SPENT</p><div class="report-title">风景值得停留，<br>你的感受也值得。</div><p>${esc(r.preference_note)}</p><p class="fineprint">规划距离 ${r.planned_distance_km.toFixed(1)} km 不等于实际步行。未采集的数据不作推断；未保存原始心率。</p></section><section class="card"><h2>旅程中的选择</h2><ul class="inline-list">${r.events.length?r.events.map(e=>`<li><span>${esc({tired:'想轻松一点',hungry:'希望用餐',rain:'天气变化演示',hr_high_sustained:'持续状态变化',accepted:'接受路线调整',rejected:'保留原路线',checkin:'完成节点打卡',unwell:'报告不适，暂停行程',progress:'进度延迟',state:'状态变化'}[e.type]||e.type)} ${e.demo?'· 演示':''}</span><small>${esc(new Date(e.at).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'}))}</small></li>`).join(''):'<li>还没有行程事件。开始漫游后会记录在这里。</li>'}</ul></section></div>`;}
+function providerTestCard(name,label){
+  const result=state.providerTests?.[name],running=state.providerTesting===name;
+  return `<article class="provider-test"><h3>${esc(label)}</h3><button type="button" class="secondary" data-provider-test="${name}" ${state.providerTesting?'disabled':''}>${running?'测试中…':name==='maps'?'测试地图':'测试天气'}</button><div role="status" aria-live="polite">${running?'<p class="fineprint">正在请求服务…</p>':result?`<p>${badge(result.ok?'测试成功':'测试失败',!result.ok)}${Number.isFinite(result.elapsed_ms)?` <small>${result.elapsed_ms} ms</small>`:''}</p><p class="fineprint">${esc(result.message)}${result.error_code?`（${esc(result.error_code)}）`:''}</p>${result.checked_at?`<p class="fineprint">测试时间：${esc(new Date(result.checked_at).toLocaleString('zh-CN'))}</p>`:''}`:'<p class="fineprint">尚未主动测试</p>'}</div>${name==='weather'?'<p class="fineprint"><a href="https://www.qweather.com/" target="_blank" rel="noopener noreferrer">天气数据：和风天气</a> · <a href="https://developer.qweather.com/attribution.html" target="_blank" rel="noopener noreferrer">数据来源声明</a></p>':''}</article>`;
+}
+async function testOpsProvider(name){
+  if(state.user?.role!=='admin'||state.providerTesting||!['maps','weather'].includes(name))return;
+  const revision=accountRevision;state.providerTesting=name;
+  try{
+    if(state.page==='ops')await render();
+    if(revision!==accountRevision)return;
+    const result=await api('/ops/test',{provider:name});
+    if(revision===accountRevision)(state.providerTests??={})[name]=result;
+  }catch(e){if(revision===accountRevision)(state.providerTests??={})[name]={ok:false,message:e.message};}
+  finally{if(revision===accountRevision){state.providerTesting=null;if(state.page==='ops')await render();}}
+}
 async function opsPage(){
   if(state.user?.role!=='admin')throw Error('仅管理员可访问运营工作台');
   const o=await api('/ops');
   return heading('SERVICE STATUS','服务运行状态。','查看地图、天气与模型服务的配置及最近调用结果。')+
-    `<section class="card"><h2>服务连接状态</h2><ul class="inline-list"><li>高德路径服务 ${badge(o.providers.maps?'已配置':'演示模式',!o.providers.maps)}</li><li>和风天气 ${badge(o.providers.weather?'已配置':'未配置',!o.providers.weather)}</li><li>DeepSeek 说明生成 ${badge(o.providers.deepseek?'已配置':'规则模板',!o.providers.deepseek)}</li><li>TypeSafe Jev 决策 ${badge(o.providers.jev?'已配置':'规则引擎',!o.providers.jev)}</li><li>地形高程 Open Topo Data ${badge(o.providers.elevation?'公开服务':'未启用',!o.providers.elevation)}</li></ul><ul class="inline-list">${Object.entries(o.provider_status||{}).map(([name,p])=>`<li>${esc({maps:'地图',weather:'天气',jev:'Jev',deepseek:'DeepSeek',elevation:'地形高程'}[name]||name)}<span>${esc({not_checked:'尚未联调',not_configured:'未配置',ok:'最近调用成功',error:'最近调用失败'}[p.status]||p.status)}${p.error_code?' · '+esc(p.error_code):''}</span></li>`).join('')}</ul><p class="fineprint">已配置不代表已验证服务可用。密钥只在服务器保存。Jev已适配TypeSafe官方接口，调用仍需本次会话授权。</p></section>`;
+    `<section class="card"><h2>服务连接状态</h2><ul class="inline-list"><li>高德路径服务 ${badge(o.providers.maps?'已配置':'演示模式',!o.providers.maps)}</li><li>和风天气 ${badge(o.providers.weather?'已配置':'未配置',!o.providers.weather)}</li><li>DeepSeek 说明生成 ${badge(o.providers.deepseek?'已配置':'规则模板',!o.providers.deepseek)}</li><li>TypeSafe Jev 决策 ${badge(o.providers.jev?'已配置':'规则引擎',!o.providers.jev)}</li><li>地形高程 Open Topo Data ${badge(o.providers.elevation?'公开服务':'未启用',!o.providers.elevation)}</li></ul><ul class="inline-list">${Object.entries(o.provider_status||{}).map(([name,p])=>`<li>${esc({maps:'地图',weather:'天气',jev:'Jev',deepseek:'DeepSeek',elevation:'地形高程'}[name]||name)}<span>${esc({not_checked:'尚未联调',not_configured:'未配置',ok:'最近调用成功',error:'最近调用失败'}[p.status]||p.status)}${p.error_code?' · '+esc(p.error_code):''}</span></li>`).join('')}</ul><p class="fineprint">已配置不代表已验证服务可用。密钥只在服务器保存。Jev已适配TypeSafe官方接口，调用仍需本次会话授权。</p><p class="fineprint">主动测试使用杭州公共测试地点，检查高德步行路径与和风天气实况。</p><div class="provider-tests">${providerTestCard('maps','高德地图')}${providerTestCard('weather','和风天气')}</div></section>`;
 }
 async function render(){if(state.page==='ops'&&state.user?.role!=='admin'){state.page=state.user?'plan':'auth';history.replaceState(null,'','#'+state.page);}updateAccountUI();destroyRouteMaps();const version=++renderVersion;$('#app').dataset.page=state.page;$$('[data-page]').forEach(b=>{b.classList.toggle('active',b.dataset.page===state.page);if(b.dataset.page===state.page)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');});$('#page-name').textContent=labels[state.page];if(['ops','report'].includes(state.page))$('#app').innerHTML='<div class="loading">正在整理旅程数据…</div>';try{const html=await ({plan:planPage,trip:tripPage,journey:journeyPage,report:reportPage,ops:opsPage,auth:authPage}[state.page])();if(version!==renderVersion)return;$('#app').innerHTML=(state.offline?'<div class="notice">当前离线，仅可查看缓存行程；联网后才能生成、上报和确认调整。</div>':'')+html;updateSensors();mountRouteMaps(state.trip);}catch(e){if(version===renderVersion)$('#app').innerHTML=`<div class="empty"><h2>暂时没有加载成功</h2><p>${esc(e.message)}</p><button class="secondary" id="retry">重新加载</button></div>`;}}
 function navigate(page){if(!labels[page])return;const menu=$('#more-menu');if(menu)menu.open=false;state.page=page;history.replaceState(null,'','#'+page);render();window.scrollTo({top:0});}
@@ -455,6 +471,7 @@ $('#app').addEventListener('input',e=>{
 $('#app').addEventListener('invalid',e=>{const details=e.target.closest('details');if(details)details.open=true;},true);
 document.addEventListener('click',async e=>{
   const b=e.target.closest('button');if(!b)return;
+  if(b.dataset.providerTest){await testOpsProvider(b.dataset.providerTest);return;}
   if(b.dataset.authMode){state.authMode=b.dataset.authMode;render();return;}
   if(b.dataset.page){navigate(b.dataset.page);return;}
   if(b.classList.contains('modal-close')){closeModal();return;}

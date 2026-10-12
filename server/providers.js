@@ -179,13 +179,14 @@ export async function leg(a,b) {
     const m=Math.round(Math.hypot((a.lng-b.lng)*96000,(a.lat-b.lat)*111000)*1.25);
     return {distance_m:m,duration_min:Math.ceil(m/65),source:'演示估算 · 非导航数据',mode:'demo',polyline:[]};
   }
-  return monitored('maps',async()=>{
-    const data=await amap('/v3/direction/walking',{origin:`${a.lng},${a.lat}`,destination:`${b.lng},${b.lat}`});
-    const p=data.route?.paths?.[0];if(!p)throw providerError('NO_WALKING_ROUTE');
-    const distance=number(p.distance),duration=number(p.duration);
-    if(distance<0||duration<0)throw providerError('INVALID_RESPONSE');
-    return {distance_m:distance,duration_min:Math.ceil(duration/60),source:'高德步行路径规划',mode:'live',polyline:(p.steps||[]).flatMap(s=>(s.polyline||'').split(';').filter(Boolean).map(p=>p.split(',').map(Number))).filter(p=>p.length===2&&p.every(Number.isFinite))};
-  });
+  return monitored('maps',()=>walkingLeg(a,b));
+}
+async function walkingLeg(a,b,{cacheable=true}={}) {
+  const data=await amap('/v3/direction/walking',{origin:`${a.lng},${a.lat}`,destination:`${b.lng},${b.lat}`},{cacheable});
+  const p=data.route?.paths?.[0];if(!p)throw providerError('NO_WALKING_ROUTE');
+  const distance=number(p.distance),duration=number(p.duration);
+  if(distance<0||duration<0)throw providerError('INVALID_RESPONSE');
+  return {distance_m:distance,duration_min:Math.ceil(duration/60),source:'高德步行路径规划',mode:'live',polyline:(p.steps||[]).flatMap(s=>(s.polyline||'').split(';').filter(Boolean).map(p=>p.split(',').map(Number))).filter(p=>p.length===2&&p.every(Number.isFinite))};
 }
 // 公交/地铁换乘。高德要求 city 为城市级 adcode；跨城需要 cityd，本项目只做同城接驳。
 // 规范化后只保留用户能核对的事实：耗时、票价、步行距离、换乘次数和每一段坐什么。
@@ -268,7 +269,7 @@ export async function searchPlaces(keyword,region,{limit=8}={}){
     return {places,keyword,region:region.name||'',source:'高德地点检索',mode:'live',updated_at:new Date().toISOString()};
   });
 }
-export async function qweatherNow() {
+export async function qweatherNow({fresh=false}={}) {
   return monitored('weather',async()=>{
     if(!configured().weather)throw providerError('NOT_CONFIGURED');
     const base=origin(process.env.QWEATHER_API_BASE),version=process.env.QWEATHER_API_VERSION||'v1';
@@ -278,7 +279,7 @@ export async function qweatherNow() {
     if(version==='v7')u.searchParams.set('location','101210101');
     u.searchParams.set('lang','zh');
     const key=process.env.QWEATHER_API_KEY,cacheKey='weather:'+fingerprint(key)+u;
-    const old=cached(cacheKey);if(old)return old;
+    const old=!fresh&&cached(cacheKey);if(old)return old;
     const d=await json(u,{headers:{'X-QW-Api-Key':key}}),time=new Date().toISOString();
     let result;
     if(version==='v7') {
@@ -291,6 +292,24 @@ export async function qweatherNow() {
     }
     return save(cacheKey,{...result,attributions:Array.isArray(result.attributions)?result.attributions.filter(x=>typeof x==='string'&&x.startsWith('https://')):[],source:'和风天气实况（杭州，非旅行日期预报）',source_url:'https://www.qweather.com/',mode:'live',api_version:version});
   });
+}
+export async function probeProvider(name) {
+  const started=performance.now();let result=null,error_code=null,message;
+  try {
+    if(name==='maps') {
+      const route=await monitored('maps',()=>walkingLeg({lng:120.1481,lat:30.2596},{lng:120.1410,lat:30.2564},{cacheable:false}));
+      result={distance_m:route.distance_m,duration_min:route.duration_min};
+      message=`杭州西湖步行路线请求成功：${route.distance_m} 米，约 ${route.duration_min} 分钟。`;
+    } else if(name==='weather') {
+      const now=await qweatherNow({fresh:true});
+      result={condition:now.condition,temperature:now.temperature,updated_at:now.updated_at};
+      message=`杭州天气实况请求成功：${now.condition}，${now.temperature}°C。`;
+    } else throw providerError('INVALID_PROVIDER');
+  } catch(e) {
+    error_code=errorCode(e);
+    message=error_code==='NOT_CONFIGURED'?'尚未配置服务，请检查服务器配置。':error_code==='TIMEOUT'?'服务连接超时，请稍后重试。':'服务测试失败，请根据错误码检查配置或网络。';
+  }
+  return {provider:name,ok:!error_code,elapsed_ms:Math.round(performance.now()-started),checked_at:new Date().toISOString(),error_code,message,result};
 }
 // 分钟级降水：未来 2 小时、5 分钟粒度（免费版可用，已实测）。
 // location 用行程所在地的经纬度；城市级精度即可，不是用户的精确位置。

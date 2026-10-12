@@ -192,6 +192,10 @@ details[open]>summary .expand-mark { transform:rotate(45deg); }
 .inline-list li { display:flex; justify-content:space-between; align-items:start; gap:15px; padding:15px 0; border-bottom:1px solid var(--line); color:#6d7a61; font-size:12px; line-height:1.8; }
 .inline-list li:last-child { border:0; }
 .inline-list small { white-space:nowrap; }
+.provider-tests { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr)); gap:16px; margin-top:20px; }
+.provider-test { min-width:0; padding:18px; border:1px solid var(--line); border-radius:12px; }
+.provider-test button { margin-top:12px; }
+.provider-test .fineprint { overflow-wrap:anywhere; }
 /* Journey: current stop and a clear choice before optional sensors. */
 .current-stop { background:var(--green); color:#f9f9ec; border-radius:16px; padding:25px 23px; }
 .current-meta { display:flex; justify-content:space-between; gap:14px; font-size:10px; color:#d3dfbc; margin-bottom:24px; }

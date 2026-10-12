@@ -259,6 +259,43 @@ function clickNode(b,button){
   return b.handlers.get('click')({target:{closest:()=>button}});
 }
 
+test('管理员主动测试按钮显示等待、成功及失败结果，并防止重复请求',async()=>{
+  let resolveProbe;const calls=[];
+  const b=browser({fetch:async(url,options={})=>{
+    if(url==='/api/ops')return {ok:true,json:async()=>({providers:{maps:true,weather:true},provider_status:{}})};
+    assert.equal(url,'/api/ops/test');calls.push(JSON.parse(options.body));
+    return new Promise(resolve=>{resolveProbe=resolve;});
+  }});
+  b.run("state.user={id:'admin-id',role:'admin'};state.page='ops'");await b.run('render()');
+  assert.match(b.node('#app').innerHTML,/测试地图/);assert.match(b.node('#app').innerHTML,/测试天气/);assert.equal(calls.length,0);
+  const pending=clickNode(b,{dataset:{providerTest:'maps'}});
+  for(let i=0;i<20&&!resolveProbe;i++)await Promise.resolve();
+  try{
+    assert.match(b.node('#app').innerHTML,/测试中/);assert.equal((b.node('#app').innerHTML.match(/ disabled/g)||[]).length,2);
+    await clickNode(b,{dataset:{providerTest:'weather'}});assert.equal(calls.length,1);
+  }finally{resolveProbe({ok:true,json:async()=>({provider:'maps',ok:true,elapsed_ms:123,checked_at:'2026-10-12T10:00:00Z',message:'步行路径返回 820 米，约 11 分钟。'})});await pending;}
+  assert.deepEqual(calls,[{provider:'maps'}]);assert.match(b.node('#app').innerHTML,/测试成功/);assert.match(b.node('#app').innerHTML,/820 米/);assert.match(b.node('#app').innerHTML,/123 ms/);
+  resolveProbe=null;const weather=clickNode(b,{dataset:{providerTest:'weather'}});
+  for(let i=0;i<20&&!resolveProbe;i++)await Promise.resolve();
+  resolveProbe({ok:true,json:async()=>({provider:'weather',ok:false,error_code:'HTTP_403',message:'<script>失败</script>',elapsed_ms:50})});await weather;
+  const html=b.node('#app').innerHTML;assert.match(html,/测试失败/);assert.match(html,/HTTP_403/);assert.match(html,/&lt;script&gt;/);assert.doesNotMatch(html,/<script>/);assert.match(html,/测试成功/);
+});
+
+test('主动测试返回时若账号已切换，不展示旧管理员结果',async()=>{
+  let resolveProbe;
+  const b=browser({fetch:async(url)=>{
+    if(url==='/api/ops')return {ok:true,json:async()=>({providers:{},provider_status:{}})};
+    if(url==='/api/trips')return {ok:true,json:async()=>({trips:[]})};
+    assert.equal(url,'/api/ops/test');return new Promise(resolve=>{resolveProbe=resolve;});
+  }});
+  b.run("state.user={role:'admin'};state.page='ops'");
+  const pending=b.run("testOpsProvider('maps')");
+  for(let i=0;i<20&&!resolveProbe;i++)await Promise.resolve();
+  await b.run("(async()=>{await switchAccount(null);state.page='auth';})()");
+  resolveProbe({ok:true,json:async()=>({ok:true,message:'旧管理员结果'})});await pending;
+  assert.equal(b.run('state.providerTesting'),null);assert.equal(b.run('Object.keys(state.providerTests).length'),0);
+});
+
 test('地点选择器能检索地点并把它设为起点',async()=>{
   const b=toolsBrowser();
   await click(b,'pick-start');

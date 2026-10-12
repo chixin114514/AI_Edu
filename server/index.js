@@ -11,7 +11,7 @@ import { createWatchRelay } from './watch-relay.js';
 import { routeMap } from './maps.js';
 import { pois, byId } from './pois.js';
 import { createPlan, evaluate, ensure, HttpError, clock, minutes, schedule, approximateDistance, readPoint } from './planner.js';
-import { decision, liveMode, providerFlags, providerStatus, resolveLocation, cityOptions, cityRegion, regionOptions, qweatherMinutely, qweatherAlerts, transitRoutes, searchPlaces, openTopoElevations } from './providers.js';
+import { decision, liveMode, providerFlags, providerStatus, probeProvider, resolveLocation, cityOptions, cityRegion, regionOptions, qweatherMinutely, qweatherAlerts, transitRoutes, searchPlaces, openTopoElevations } from './providers.js';
 import { gcj02ToWgs84, routePoints, buildElevationProfile } from './elevation.js';
 const root=fileURLToPath(new URL('../public/',import.meta.url));
 const mime={'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8','.svg':'image/svg+xml','.json':'application/json','.png':'image/png'};
@@ -276,6 +276,10 @@ export function createApp({database=process.env.DATABASE_PATH||'./data/manxing.s
         return send({trip_id:trip.id,title:trip.title,finished:sessions.length>0&&sessions.every(s=>s.ended_at),total_stops:trip.days.reduce((n,d)=>n+d.stops.length,0),visited_stops:new Set(events.filter(e=>e.type==='checkin').map(e=>e.stop_id)).size,walked_km:sessions.reduce((n,s)=>n+s.walked_km,0),planned_distance_km:trip.days.reduce((n,d)=>n+d.distance_m,0)/1000,accepted:suggestions.filter(s=>s.accepted===true).length,rejected:suggestions.filter(s=>s.accepted===false).length,events,preference_note:suggestions.some(s=>s.accepted)?'下次可以优先尝试更轻松的节奏；请在生成行程时确认。':'继续记录您的选择，逐步认识适合您的旅行节奏。',data_mode:trip.data_mode});
       }
       if(path==='/api/ops'&&req.method==='GET')return send({providers:providerFlags(),provider_status:providerStatus()});
+      if(path==='/api/ops/test'&&req.method==='POST'){
+        ensure(['maps','weather'].includes(b.provider),'仅支持测试地图或天气服务');
+        return send(await probeProvider(b.provider));
+      }
       if(path==='/api/privacy/delete'&&req.method==='POST'){ensure(b.confirm===true,'请确认删除');watch.revokeOwner(owner);store.deleteOwner(owner);return send({deleted:true});}
       throw new HttpError(404,'接口不存在');
     }catch(e){send({error:e.status?e.message:'服务暂时不可用，请稍后重试'},e.status||500);if(!e.status)console.error('Request failed:',e.name);}

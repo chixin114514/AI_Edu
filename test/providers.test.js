@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { leg, qweatherNow, weather, explain, decision, jevRequest, parseJev, providerStatus } from '../server/providers.js';
+import { leg, qweatherNow, weather, explain, decision, jevRequest, parseJev, providerStatus, probeProvider } from '../server/providers.js';
 import { mcpSpec } from '../scripts/mcp-server.js';
 import { createApp } from '../server/index.js';
-import { dispatch } from './harness.js';
+import { dispatch, mergeCookies } from './harness.js';
 
 function setup(t,handler){
   const oldFetch=globalThis.fetch,oldEnv={...process.env};
@@ -13,6 +13,59 @@ function setup(t,handler){
 }
 const response=(body,status=200)=>new Response(JSON.stringify(body),{status,headers:{'Content-Type':'application/json'}});
 const goodJev=()=>({model:'jev-1.13.0',answers:{travel_state:{type:'choice',choice:'rest',probabilities:{normal:.05,mild_fatigue:.1,rest:.85},confidence:.8}}});
+
+test('admin map and weather probes make fresh requests even in demo mode and update status',async t=>{
+  const calls={maps:0,weather:0};
+  setup(t,async url=>{
+    const u=new URL(url);
+    if(u.pathname==='/v3/direction/walking'){
+      calls.maps++;assert.equal(u.searchParams.get('origin'),'120.1481,30.2596');
+      return response({status:'1',route:{paths:[{distance:'820',duration:'660',steps:[]}]}});
+    }
+    assert.equal(u.pathname,'/weather/v1/current/30.25/120.15');calls.weather++;
+    return response({condition:{text:'晴'},temperature:{value:24,unit:'°C'}});
+  });
+  await leg({lng:120.1481,lat:30.2596},{lng:120.1410,lat:30.2564});await qweatherNow();
+  process.env.DATA_MODE='demo';
+  const app=createApp({database:':memory:'});t.after(()=>app.emit('close'));
+  const login=await dispatch(app,'/api/auth/login',{username:'admin',password:'admin'});
+  const cookie=mergeCookies('',login.headers['set-cookie']);
+  for(const provider of ['maps','weather','maps','weather']){
+    const r=await dispatch(app,'/api/ops/test',{provider},{cookie});
+    assert.equal(r.status,200);assert.equal(r.body.ok,true);assert.equal(r.body.provider,provider);
+    assert.ok(r.body.elapsed_ms>=0);assert.ok(Number.isFinite(Date.parse(r.body.checked_at)));
+    assert.equal(r.body.error_code,null);
+    if(provider==='maps')assert.deepEqual(r.body.result,{distance_m:820,duration_min:11});
+    else assert.equal(r.body.result.temperature,24);
+    for(const secret of [process.env.AMAP_MAPS_API_KEY,process.env.QWEATHER_API_KEY])assert.ok(!JSON.stringify(r.body).includes(secret));
+  }
+  assert.deepEqual(calls,{maps:3,weather:3});assert.equal(process.env.DATA_MODE,'demo');
+  const ops=await dispatch(app,'/api/ops',undefined,{cookie});
+  assert.equal(ops.body.provider_status.maps.status,'ok');assert.equal(ops.body.provider_status.weather.status,'ok');
+});
+test('probe endpoint requires admin and rejects unknown providers before making requests',async t=>{
+  let calls=0;setup(t,async()=>{calls++;throw Error('unexpected request');});
+  const app=createApp({database:':memory:'});t.after(()=>app.emit('close'));
+  assert.equal((await dispatch(app,'/api/ops/test',{provider:'maps'})).status,401);
+  const regular=await dispatch(app,'/api/auth/register',{username:'tester',password:'test-password'});
+  assert.equal((await dispatch(app,'/api/ops/test',{provider:'weather'},{cookie:mergeCookies('',regular.headers['set-cookie'])})).status,403);
+  const admin=await dispatch(app,'/api/auth/login',{username:'admin',password:'admin'});
+  const cookie=mergeCookies('',admin.headers['set-cookie']);
+  for(const provider of ['deepseek','https://example.com',null])assert.equal((await dispatch(app,'/api/ops/test',{provider},{cookie})).status,400);
+  assert.equal(calls,0);
+});
+test('probe failures expose safe errors without fallback, cached success or upstream secrets',async t=>{
+  let calls=0;setup(t,async()=>{calls++;return response({message:'private-upstream-body'},403);});
+  let r=await probeProvider('weather');assert.equal(r.ok,false);assert.equal(r.error_code,'HTTP_403');assert.equal(r.result,null);assert.equal(calls,1);
+  assert.equal(providerStatus().weather.status,'error');
+  globalThis.fetch=async()=>response({status:'0',infocode:'10001',info:'private-upstream-body'});
+  r=await probeProvider('maps');assert.equal(r.error_code,'AMAP_10001');assert.equal(r.ok,false);
+  globalThis.fetch=async()=>{throw new DOMException('private-upstream-body','TimeoutError');};
+  r=await probeProvider('weather');assert.equal(r.error_code,'TIMEOUT');assert.match(r.message,/超时/);
+  delete process.env.QWEATHER_API_KEY;
+  r=await probeProvider('weather');assert.equal(r.error_code,'NOT_CONFIGURED');assert.equal(r.ok,false);
+  assert.ok(!JSON.stringify(r).includes('private-upstream-body'));
+});
 
 test('TypeSafe uses official systemone payload and parses choice distribution',async t=>{
   setup(t,async(url,init)=>{assert.equal(String(url),'https://api.typesafe.ai/v1/systemone');assert.equal(init.headers.Authorization,'Bearer unit-jev');assert.equal(init.redirect,'error');const body=JSON.parse(init.body);assert.equal(body.model,'jev-1.13.0');assert.equal(body.questions.travel_state.type,'choice');assert.equal(Object.keys(body.questions.travel_state.criteria).length,3);assert.ok(!('raw_hr'in body.state.features));assert.ok(!('location'in body.state.features));return response(goodJev());});
