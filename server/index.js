@@ -10,8 +10,9 @@ import { createAuth } from './auth.js';
 import { createWatchRelay } from './watch-relay.js';
 import { routeMap } from './maps.js';
 import { pois, byId } from './pois.js';
-import { createPlan, evaluate, ensure, HttpError, clock, minutes, schedule, approximateDistance } from './planner.js';
-import { decision, liveMode, providerFlags, providerStatus, resolveLocation, cityOptions, regionOptions, qweatherMinutely, qweatherAlerts } from './providers.js';
+import { createPlan, evaluate, ensure, HttpError, clock, minutes, schedule, approximateDistance, readPoint } from './planner.js';
+import { decision, liveMode, providerFlags, providerStatus, resolveLocation, cityOptions, cityRegion, regionOptions, qweatherMinutely, qweatherAlerts, transitRoutes, searchPlaces, openTopoElevations } from './providers.js';
+import { gcj02ToWgs84, routePoints, buildElevationProfile } from './elevation.js';
 const root=fileURLToPath(new URL('../public/',import.meta.url));
 const mime={'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8','.svg':'image/svg+xml','.json':'application/json','.png':'image/png'};
 async function body(req){
@@ -111,6 +112,27 @@ export function createApp({database=process.env.DATABASE_PATH||'./data/manxing.s
         ]);
         return send({available:Boolean(minutely||alerts),area:point.city||'行程所在地',anchor:{lat:point.lat,lng:point.lng},minutely,alerts,note:'城市级天气，取行程首站位置；降水为未来2小时5分钟粒度，预警来自国家预警信息发布中心'});
       }
+      if(path==='/api/elevation'&&req.method==='POST'){
+        let points,dayNote='';
+        if(b.trip_id!==undefined){
+          const trip=get('trip',b.trip_id),day=Number(b.day??1);
+          ensure(Number.isInteger(day)&&day>=1&&day<=trip.days.length,'旅行日无效');
+          const stops=trip.days[day-1].stops;
+          ensure(stops.length>=2,'当天行程不足两个节点，无法计算坡段');
+          points=routePoints(stops);
+          dayNote='第 '+day+' 天：'+stops.map(stop=>stop.name).join(' → ');
+        }else{
+          ensure(Array.isArray(b.points)&&b.points.length>=1&&b.points.length<=48,'请提供1—48个坐标点');
+          points=b.points.map((point,index)=>readPoint(point,'第'+(index+1)+'个点'));
+        }
+        // Open Topo Data 用的是 WGS-84 高程网格，先把项目内的 GCJ-02 反解过去；
+        // 几百米平移在陡坡上足以改变取样结果，不能直接拿 GCJ-02 去查。
+        let raw;try{raw=await openTopoElevations(points.map(point=>gcj02ToWgs84(point.lat,point.lng)));}catch{throw new HttpError(503,'高程服务暂时不可用，请稍后重试');}
+        const profile=buildElevationProfile(points,raw.elevations);
+        return send({...profile,context:dayNote,dataset:raw.dataset,source:raw.source,source_url:raw.source_url,attributions:raw.attributions,updated_at:raw.updated_at,
+          coordinate_note:'输入按 GCJ-02 解释，查询高程前已转换为 WGS-84。',
+          accuracy_note:'SRTM 90 米网格高程估算，不是实测坡度；台阶、隧道、桥面和微小起伏不会体现，仅作节奏参考。'});
+      }
       if(path==='/api/cities'&&req.method==='GET'){
         let result;try{result=await cityOptions();}catch{throw new HttpError(503,'完整城市列表暂不可用，请选择常用城市或使用自动定位');}
         return send(result);
@@ -128,6 +150,33 @@ export function createApp({database=process.env.DATABASE_PATH||'./data/manxing.s
         const nearest=supported&&b.accuracy<=500&&candidates[0].distance_m<=10000?candidates[0]:null;
         // Transient lookup only: neither the input nor address is written to the store or sent to models.
         return send({...location,supported_city:liveMode()?Boolean(location.adcode):supported,dynamic_planning:liveMode(),suggested_start:liveMode()?null:nearest,coverage:liveMode()?'高德支持的国内城市':'杭州西湖周边',distance_label:'直线距离，非步行距离'});
+      }
+      if(path==='/api/places'&&req.method==='POST'){
+        ensure(liveMode(),'地点检索需要开启实况服务（配置高德 Key）',503);
+        const keyword=typeof b.keyword==='string'?b.keyword.trim():'';
+        ensure(keyword.length>=2&&keyword.length<=40,'请输入2—40个字的地点名称');
+        let region;
+        if(b.trip_id!==undefined){
+          const trip=get('trip',b.trip_id);
+          region={name:trip.preferences.city,adcode:trip.route_pack?.city_adcode||trip.route_pack?.adcode||'',district_adcode:trip.preferences.district_adcode||''};
+        }else{
+          ensure(typeof b.city==='string'&&b.city.trim(),'请提供城市或行程');
+          let city;try{city=await cityRegion(b.city.trim());}catch{throw new HttpError(503,'暂时无法确认城市，请稍后重试');}
+          region={name:city.name,adcode:city.adcode,district_adcode:''};
+        }
+        ensure(/^\d{6}$/.test(region.adcode||''),'缺少城市编码，暂时无法检索地点',503);
+        let result;try{result=await searchPlaces(keyword,region);}catch{throw new HttpError(503,'地点检索暂时不可用，请稍后重试或手动选择行程中的节点');}
+        return send(result);
+      }
+      if(path==='/api/transit'&&req.method==='POST'){
+        ensure(liveMode(),'公交换乘需要开启实况服务（配置高德 Key）',503);
+        const from=readPoint(b.from,'出发地'),to=readPoint(b.to,'目的地');
+        ensure(from.lat!==to.lat||from.lng!==to.lng,'出发地与目的地不能相同');
+        let city=typeof b.city==='string'?b.city.trim():'';
+        if(!city&&b.trip_id!==undefined){const trip=get('trip',b.trip_id);city=trip.route_pack?.city_adcode||trip.route_pack?.adcode||'';}
+        ensure(/^\d{6}$/.test(city),'缺少城市编码，无法查询公交换乘');
+        let result;try{result=await transitRoutes(from,to,city);}catch{throw new HttpError(503,'暂时没有查到公共交通方案，请稍后重试或直接步行');}
+        return send({...result,from:{name:from.name,lat:from.lat,lng:from.lng},to:{name:to.name,lat:to.lat,lng:to.lng}});
       }
       if(path==='/api/trips'&&req.method==='GET')return send({trips:store.list('trip',owner).reverse()});
       if(path==='/api/route-packs'&&req.method==='GET'){

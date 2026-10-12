@@ -6,6 +6,17 @@ export class HttpError extends Error {constructor(status,message){super(message)
 export const ensure=(condition,message,status=400)=>{if(!condition)throw new HttpError(status,message);};
 export const minutes=t=>Number(t.slice(0,2))*60+Number(t.slice(3));
 export const clock=m=>`${String(Math.floor(m/60)).padStart(2,'0')}:${String(m%60).padStart(2,'0')}`;
+// 读取一个自定义坐标点（起点、终点、必去节点、换乘端点共用）。
+// 坐标一律按 GCJ-02 处理，与高德返回的地点保持同一坐标系。
+export function readPoint(value,label){
+  ensure(value!==undefined&&value!==null,label+'格式无效');
+  ensure(typeof value==='object'&&!Array.isArray(value),label+'格式无效');
+  const lat=Number(value.lat),lng=Number(value.lng);
+  ensure(Number.isFinite(lat)&&lat>=-90&&lat<=90&&Number.isFinite(lng)&&lng>=-180&&lng<=180,label+'坐标无效');
+  const name=typeof value.name==='string'&&value.name.trim()?value.name.trim().slice(0,40):label;
+  return {name,lat,lng};
+}
+const optionalPoint=(value,label)=>value===undefined||value===null?null:readPoint(value,label);
 export function validatePlan(b){
   ensure(typeof b.city==='string'&&/^[\p{Script=Han}·]{2,30}$/u.test(b.city.trim()),'请输入中文城市名称，例如上海或成都市');
   ensure(b.province===undefined||(typeof b.province==='string'&&/^[\p{Script=Han}·]{2,30}$/u.test(b.province)),'请选择有效省份');
@@ -23,16 +34,8 @@ export function validatePlan(b){
   ensure(typeof b.model_consent==='boolean','请明确模型数据授权选择');
   ensure(b.start_poi===undefined||b.start_poi==='auto'||(!liveMode()&&!!byId(b.start_poi)),'请使用自动选择起点');
   // 自定义起点 / 终点（酒店、当前位置等）。两种模式都支持；演示模式下步行距离为估算值。
-  const readPoint=(value,label)=>{
-    if(value===undefined||value===null)return null;
-    ensure(value&&typeof value==='object'&&!Array.isArray(value),`${label}格式无效`);
-    const lat=Number(value.lat),lng=Number(value.lng);
-    ensure(Number.isFinite(lat)&&lat>=-90&&lat<=90&&Number.isFinite(lng)&&lng>=-180&&lng<=180,`${label}坐标无效`);
-    const name=typeof value.name==='string'&&value.name.trim()?value.name.trim().slice(0,40):label;
-    return {name,lat,lng};
-  };
-  const startPoint=readPoint(b.start_point,'起点');
-  const endPoint=readPoint(b.end_point,'终点');
+  const startPoint=optionalPoint(b.start_point,'起点');
+  const endPoint=optionalPoint(b.end_point,'终点');
   // 必去节点：前端把已生成行程里的节点回传，保证一定排进路线。
   const rawMust=Array.isArray(b.must_visit)?b.must_visit:[];
   ensure(rawMust.length<=3,'最多锁定 3 个必去地点');
