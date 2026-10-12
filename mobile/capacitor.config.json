@@ -1,0 +1,11 @@
+{
+  "appId": "com.manxing.app",
+  "appName": "慢行",
+  "webDir": "www",
+  "server": {
+    "androidScheme": "https"
+  },
+  "android": {
+    "allowMixedContent": false
+  }
+}

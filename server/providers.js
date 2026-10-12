@@ -208,6 +208,56 @@ export async function qweatherNow() {
     return save(cacheKey,{...result,attributions:Array.isArray(result.attributions)?result.attributions.filter(x=>typeof x==='string'&&x.startsWith('https://')):[],source:'和风天气实况（杭州，非旅行日期预报）',source_url:'https://www.qweather.com/',mode:'live',api_version:version});
   });
 }
+// 分钟级降水：未来 2 小时、5 分钟粒度（免费版可用，已实测）。
+// location 用行程所在地的经纬度；城市级精度即可，不是用户的精确位置。
+export async function qweatherMinutely(lat,lng) {
+  return monitored('weather',async()=>{
+    if(!configured().weather)throw providerError('NOT_CONFIGURED');
+    if(!Number.isFinite(lat)||!Number.isFinite(lng))throw providerError('INVALID_LOCATION');
+    const base=origin(process.env.QWEATHER_API_BASE);
+    const u=new URL('/v7/minutely/5m',base);
+    u.searchParams.set('location',`${lng.toFixed(4)},${lat.toFixed(4)}`);
+    u.searchParams.set('lang','zh');
+    const key=process.env.QWEATHER_API_KEY,cacheKey='minutely:'+fingerprint(key)+u;
+    const old=cached(cacheKey);if(old)return old;
+    const d=await json(u,{headers:{'X-QW-Api-Key':key}});
+    if(d.code!=='200')throw providerError(/^\d{3}$/.test(d.code||'')?'QWEATHER_'+d.code:'INVALID_RESPONSE');
+    const minutes=(Array.isArray(d.minutely)?d.minutely:[])
+      .map(m=>({at:m.fxTime,precip:number(m.precip)??0})).filter(m=>typeof m.at==='string');
+    if(!minutes.length)throw providerError('INVALID_RESPONSE');
+    const raining=minutes.filter(m=>m.precip>0);
+    return save(cacheKey,{
+      summary:typeof d.summary==='string'?d.summary.slice(0,140):'',
+      raining_now:minutes[0].precip>0,
+      rainy_minutes:raining.length,
+      horizon_min:minutes.length*5,
+      max_precip:Math.max(...minutes.map(m=>m.precip)),
+      minutes,
+      source:'和风天气分钟级降水（未来2小时，5分钟粒度）',source_url:'https://www.qweather.com/',mode:'live',updated_at:new Date().toISOString()});
+  });
+}
+// 天气预警：和风新版接口 /weatheralert/v1/current/{lat}/{lng}。
+// 注意：旧的 /v7/warning/now 已被官方废弃（返回 403 Deprecated），不要再用。
+export async function qweatherAlerts(lat,lng) {
+  return monitored('weather',async()=>{
+    if(!configured().weather)throw providerError('NOT_CONFIGURED');
+    if(!Number.isFinite(lat)||!Number.isFinite(lng))throw providerError('INVALID_LOCATION');
+    const base=origin(process.env.QWEATHER_API_BASE);
+    const u=new URL(`/weatheralert/v1/current/${lat.toFixed(4)}/${lng.toFixed(4)}`,base);
+    u.searchParams.set('lang','zh');
+    const key=process.env.QWEATHER_API_KEY,cacheKey='alerts:'+fingerprint(key)+u;
+    const old=cached(cacheKey);if(old)return old;
+    const d=await json(u,{headers:{'X-QW-Api-Key':key}});
+    if(d.error)throw providerError(/^\d{3}$/.test(String(d.error.status||''))?'QWEATHER_'+d.error.status:'INVALID_RESPONSE');
+    const text=v=>typeof v==='string'?v.slice(0,400):'';
+    const alerts=(Array.isArray(d.alerts)?d.alerts:[]).map(a=>({
+      id:text(a.id),event:text(a.eventType?.name),severity:text(a.severity),color:text(a.color?.code),
+      headline:text(a.headline),description:text(a.description),instruction:text(a.instruction),sender:text(a.senderName),
+      issued_at:text(a.issuedTime),effective_at:text(a.effectiveTime),expire_at:text(a.expireTime)
+    })).filter(a=>a.headline||a.description);
+    return save(cacheKey,{alerts,count:alerts.length,source:'和风天气预警（国家预警信息发布中心）',source_url:'https://www.qweather.com/',mode:'live',updated_at:new Date().toISOString()});
+  });
+}
 export async function weather(region) {
   if(!liveMode())return {condition:'多云',temperature:24,source:'演示天气',mode:'demo',updated_at:new Date().toISOString(),time_label:'演示时间'};
   let fallback=false;
