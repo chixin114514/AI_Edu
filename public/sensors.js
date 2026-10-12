@@ -5,8 +5,13 @@ export function parseHeartRate(view){
   const value=flags&1?view.getUint16(1,true):view.getUint8(1);
   return value>=25&&value<=240?value:null;
 }
+// 是否应把"页面不可见"视为数据断档。
+// 网页端：切后台后浏览器会冻结页面，数据确实断档，需要清空趋势窗口。
+// 原生容器：由前台服务保活（mobile/src/keepalive-native.js），数据不断档，
+// 交给下面的过期判断处理即可，否则锁屏走路时心率趋势会被白白丢掉。
+const backgroundIsPaused=()=>document.hidden&&!globalThis.__manxingKeepBackgroundTrends;
 export class Sensors extends EventTarget{
-  constructor(){super();this.hr=null;this.baseline=null;this.samples=[];this.steps=[];this.cadence=null;this.totalSteps=0;this.calibrating=false;this.highSince=null;this.lastPeak=0;this.motionActive=false;this.lastMotion=0;this.position=null;this.onMotion=this.onMotion.bind(this);this.hidden=()=>{if(document.hidden){this.highSince=null;this.steps=[];this.cadence=null;this.samples=[];this.calibrating=false;this.emit('页面已进入后台，趋势窗口已重置');}};document.addEventListener('visibilitychange',this.hidden);this.timer=setInterval(()=>{const now=Date.now();if(this.lastHr&&now-this.lastHr>10000){this.hr=null;this.highSince=null;this.samples=[];}if(this.lastMotion&&now-this.lastMotion>5000)this.cadence=null;this.steps=this.steps.filter(t=>t>now-60000);this.emit();},2000);}
+  constructor(){super();this.hr=null;this.baseline=null;this.samples=[];this.steps=[];this.cadence=null;this.totalSteps=0;this.calibrating=false;this.highSince=null;this.lastPeak=0;this.motionActive=false;this.lastMotion=0;this.position=null;this.onMotion=this.onMotion.bind(this);this.hidden=()=>{if(!backgroundIsPaused())return;this.highSince=null;this.steps=[];this.cadence=null;this.samples=[];this.calibrating=false;this.emit('页面已进入后台，趋势窗口已重置');};document.addEventListener('visibilitychange',this.hidden);this.timer=setInterval(()=>{const now=Date.now();if(this.lastHr&&now-this.lastHr>10000){this.hr=null;this.highSince=null;this.samples=[];}if(this.lastMotion&&now-this.lastMotion>5000)this.cadence=null;this.steps=this.steps.filter(t=>t>now-60000);this.emit();},2000);}
   emit(message){this.dispatchEvent(new CustomEvent('change',{detail:{hr:this.hr,baseline:this.baseline,cadence:this.cadence,steps:this.totalSteps,connected:!!this.device?.gatt?.connected,calibrating:this.calibrating,position:this.position,message}}));}
   async connect(){
     if(!window.isSecureContext)throw Error('蓝牙需要HTTPS或本机localhost安全环境。');
@@ -18,7 +23,7 @@ export class Sensors extends EventTarget{
     await characteristic.startNotifications();
     characteristic.addEventListener('characteristicvaluechanged',event=>{
       let value;try{value=parseHeartRate(event.target.value);}catch{return;}
-      const now=Date.now();if(!value||document.hidden){this.hr=null;this.highSince=null;return;}
+      const now=Date.now();if(!value||backgroundIsPaused()){this.hr=null;this.highSince=null;return;}
       if(this.lastHr&&now-this.lastHr>5000){this.highSince=null;if(this.calibrating){this.samples=[];this.calibrationStart=now;}}
       this.hr=value;this.lastHr=now;this.samples.push({at:now,value});this.samples=this.samples.filter(s=>s.at>now-180000);
       if(this.calibrating&&now-this.calibrationStart>=30000&&this.samples.length>=20){const v=this.samples.filter(s=>s.at>=this.calibrationStart).map(s=>s.value).sort((a,b)=>a-b);this.baseline=v[Math.floor(v.length/2)];this.calibrating=false;this.emit('静息参考基线采集完成，仅用于本次节奏提示。');}
@@ -35,7 +40,7 @@ export class Sensors extends EventTarget{
     this.emit('运动检测已启用。步数为手机加速度的实验性估计。');
   }
   onMotion(event){
-    if(document.hidden)return;const a=event.accelerationIncludingGravity;if(!a||a.x==null)return;
+    if(backgroundIsPaused())return;const a=event.accelerationIncludingGravity;if(!a||a.x==null)return;
     const now=Date.now(),magnitude=Math.hypot(a.x,a.y,a.z);this.lastMotion=now;
     if(magnitude>12.2&&now-this.lastPeak>300){this.steps.push(now);this.totalSteps++;this.lastPeak=now;}
     this.steps=this.steps.filter(t=>t>now-60000);

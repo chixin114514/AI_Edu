@@ -7,9 +7,9 @@ import { createStore } from './store.js';
 import { routeMap } from './maps.js';
 import { pois, byId } from './pois.js';
 import { createPlan, evaluate, ensure, HttpError, clock, minutes, schedule, approximateDistance } from './planner.js';
-import { decision, liveMode, providerFlags, providerStatus, resolveLocation, cityOptions } from './providers.js';
+import { decision, liveMode, providerFlags, providerStatus, resolveLocation, cityOptions, qweatherMinutely, qweatherAlerts } from './providers.js';
 const root=fileURLToPath(new URL('../public/',import.meta.url));
-const mime={'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8','.svg':'image/svg+xml','.json':'application/json'};
+const mime={'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8','.svg':'image/svg+xml','.json':'application/json','.png':'image/png'};
 const safeEqual=(a,b)=>{const x=Buffer.from(a),y=Buffer.from(b);return x.length===y.length&&timingSafeEqual(x,y);};
 async function body(req){
   ensure((req.headers['content-type']||'').startsWith('application/json'),'仅接受JSON请求',415);
@@ -50,6 +50,24 @@ export function createApp({database=process.env.DATABASE_PATH||'./data/manxing.s
       if(req.method==='POST') {lockKey=owner;ensure(!locks.has(lockKey),'上一操作仍在处理中，请稍后重试',409);locks.add(lockKey);acquired=true;}
       if(path==='/api/config'&&req.method==='GET')return send({data_mode:liveMode()?'live':'demo',dynamic_planning:liveMode(),city:'杭州',providers:providerFlags(),provider_status:providerStatus(),health_notice:'仅辅助调整旅行节奏，不作医学判断。',privacy:'心率原始值留在浏览器；服务端仅保存事件类型、累计步行和确认记录，不保存上传的健康特征。'});
       if(path==='/api/pois'&&req.method==='GET')return send({pois});
+      if(path==='/api/weather'&&req.method==='GET'){
+        // 未配置和风时明确说不可用，不回退到编造的天气
+        if(!providerFlags().weather)return send({available:false,reason:'未配置天气服务',minutely:null,alerts:null});
+        // 取行程首站所在位置；城市级精度即可，不发送用户的精确位置
+        let anchor=null;
+        try{
+          const requested=new URL(req.url,'http://local').searchParams.get('trip_id');
+          const trip=requested?get('trip',requested):store.list('trip',owner).at(-1);
+          const stop=trip?.days?.[0]?.stops?.[0];
+          if(stop&&Number.isFinite(stop.lat)&&Number.isFinite(stop.lng))anchor={lat:stop.lat,lng:stop.lng,city:trip.preferences?.city||''};
+        }catch{}
+        const point=anchor||{lat:30.2590,lng:120.1503,city:'杭州市'};
+        const [minutely,alerts]=await Promise.all([
+          qweatherMinutely(point.lat,point.lng).catch(()=>null),
+          qweatherAlerts(point.lat,point.lng).catch(()=>null)
+        ]);
+        return send({available:Boolean(minutely||alerts),area:point.city||'行程所在地',anchor:{lat:point.lat,lng:point.lng},minutely,alerts,note:'城市级天气，取行程首站位置；降水为未来2小时5分钟粒度，预警来自国家预警信息发布中心'});
+      }
       if(path==='/api/cities'&&req.method==='GET'){
         let result;try{result=await cityOptions();}catch{throw new HttpError(503,'完整城市列表暂不可用，请选择常用城市或使用自动定位');}
         return send(result);
