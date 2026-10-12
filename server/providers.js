@@ -107,6 +107,18 @@ export async function cityOptions() {
   if(!cities.size)throw providerError('INVALID_RESPONSE');
   return {cities:[...cities.values()].sort((a,b)=>a.adcode.localeCompare(b.adcode)),source:'高德行政区划'};
 }
+export function normalizeRegions(provinces) {
+  const valid=p=>p&&typeof p.name==='string'&&/^[\p{Script=Han}·]{2,30}$/u.test(p.name)&&/^\d{6}$/.test(p.adcode);
+  const districts=items=>items.flatMap(p=>p.level==='district'?[p]:p.level==='city'?p.districts||[]:[]).filter(p=>p.level==='district'&&valid(p)).map(({name,adcode})=>({name,adcode})).sort((a,b)=>a.adcode.localeCompare(b.adcode));
+  return provinces.filter(valid).map(p=>({name:p.name,adcode:p.adcode,cities:['北京市','天津市','上海市','重庆市'].includes(p.name)?[{name:p.name,adcode:p.adcode,districts:districts(p.districts||[])}]:(p.districts||[]).filter(c=>c.level==='city'&&valid(c)).map(c=>({name:c.name,adcode:c.adcode,districts:districts(c.districts||[])})).sort((a,b)=>a.adcode.localeCompare(b.adcode))})).filter(p=>p.cities.length).sort((a,b)=>a.adcode.localeCompare(b.adcode));
+}
+export async function regionOptions() {
+  if(!liveMode())return {provinces:[{name:'浙江省',adcode:'330000',cities:[{name:'杭州市',adcode:'330100',districts:[]}]}],source:'演示城市'};
+  const d=await amap('/v3/config/district',{keywords:'中国',subdistrict:3,extensions:'base'});
+  const provinces=normalizeRegions(d.districts?.find(p=>p.level==='country')?.districts||[]);
+  if(!provinces.length)throw providerError('INVALID_RESPONSE');
+  return {provinces,source:'高德行政区划'};
+}
 export async function cityRegion(name) {
   return monitored('maps',async()=>{
     const d=await amap('/v3/config/district',{keywords:name,subdistrict:0,extensions:'base'});
@@ -130,6 +142,7 @@ export function normalizePoi(p,region,index=0) {
   // Defend against unexpectedly broad upstream search results, including municipality codes.
   const prefix=region.adcode.endsWith('0000')?region.adcode.slice(0,2):region.adcode.slice(0,4);
   if(typeof p.adcode!=='string'||!p.adcode.startsWith(prefix))return null;
+  if(region.district_adcode&&p.adcode!==region.district_adcode)return null;
   const type=typeof p.type==='string'?p.type:'',code=typeof p.typecode==='string'?p.typecode:'';
   if(/出入口|停车场|售票|游客服务|卫生间/.test(type+' '+p.name))return null;
   const indoor=/博物馆|美术馆|图书馆|展览馆/.test(type);
@@ -150,7 +163,7 @@ export async function cityPois(region,interests=[]) {
     const groups=[{types:interests.includes('展览')?'140100|140200|140500|110000':'110000|140100|140200',size:25},{types:'140100|140200|140500',size:15},{types:'050000',size:10}];
     const found=new Map();
     for(const group of groups){
-      const d=await amap('/v5/place/text',{region:region.adcode,city_limit:'true',types:group.types,page_size:group.size,page_num:1,show_fields:'business'});
+      const d=await amap('/v5/place/text',{region:region.district_adcode||region.adcode,city_limit:'true',types:group.types,page_size:group.size,page_num:1,show_fields:'business'});
       if(!Array.isArray(d.pois))throw providerError('INVALID_RESPONSE');
       for(const raw of d.pois){const p=normalizePoi(raw,region,found.size);if(p&&!found.has(p.id)&&![...found.values()].some(v=>v.name===p.name&&Math.hypot(v.lng-p.lng,v.lat-p.lat)<.001))found.set(p.id,p);}
     }

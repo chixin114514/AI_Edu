@@ -1,12 +1,15 @@
 import { randomUUID } from 'node:crypto';
 import { pois, byId } from './pois.js';
-import { leg, weather, explain, liveMode, cityRegion, cityPois } from './providers.js';
+import { leg, weather, explain, liveMode, cityRegion, cityPois, regionOptions } from './providers.js';
 export class HttpError extends Error {constructor(status,message){super(message);this.status=status;}}
 export const ensure=(condition,message,status=400)=>{if(!condition)throw new HttpError(status,message);};
 export const minutes=t=>Number(t.slice(0,2))*60+Number(t.slice(3));
 export const clock=m=>`${String(Math.floor(m/60)).padStart(2,'0')}:${String(m%60).padStart(2,'0')}`;
 export function validatePlan(b){
   ensure(typeof b.city==='string'&&/^[\p{Script=Han}·]{2,30}$/u.test(b.city.trim()),'请输入中文城市名称，例如上海或成都市');
+  ensure(b.province===undefined||(typeof b.province==='string'&&/^[\p{Script=Han}·]{2,30}$/u.test(b.province)),'请选择有效省份');
+  ensure(b.district_adcode===undefined||b.district_adcode===''||(typeof b.district_adcode==='string'&&/^\d{6}$/.test(b.district_adcode)),'请选择有效区县');
+  if(!liveMode())ensure(!b.district_adcode,'演示模式暂不支持区县筛选');
   if(!liveMode())ensure(['杭州','杭州市'].includes(b.city.trim()),'演示模式仅有杭州样本；其他城市需要开启实况服务');
   ensure(/^\d{4}-\d{2}-\d{2}$/.test(b.date||'')&&!Number.isNaN(Date.parse(b.date))&&new Date(b.date).toISOString().slice(0,10)===b.date,'请选择有效日期');
   ensure([1,2].includes(b.days),'仅支持一日或两日行程');
@@ -18,7 +21,7 @@ export function validatePlan(b){
   ensure(['独自','情侣','亲子','长辈同行'].includes(b.companion),'同行选项无效');
   ensure(typeof b.model_consent==='boolean','请明确模型数据授权选择');
   ensure(b.start_poi===undefined||b.start_poi==='auto'||(!liveMode()&&!!byId(b.start_poi)),'请使用自动选择起点');
-  return {city:b.city.trim(),date:b.date,days:b.days,budget:b.budget,walk_limit_km:b.walk_limit_km,interests:b.interests,start_time:b.start_time,end_time:b.end_time,companion:b.companion,model_consent:b.model_consent,start_poi:liveMode()?'auto':(b.start_poi&&b.start_poi!=='auto'?b.start_poi:'broken-bridge')};
+  return {province:b.province||null,district_adcode:b.district_adcode||null,city:b.city.trim(),date:b.date,days:b.days,budget:b.budget,walk_limit_km:b.walk_limit_km,interests:b.interests,start_time:b.start_time,end_time:b.end_time,companion:b.companion,model_consent:b.model_consent,start_poi:liveMode()?'auto':(b.start_poi&&b.start_poi!=='auto'?b.start_poi:'broken-bridge')};
 }
 export async function schedule(ids,preferences,date,startAt,origin,catalog){
   let time=startAt??minutes(preferences.start_time),cost=0,walk=0,prev=origin||null;
@@ -59,8 +62,18 @@ export function orderCandidates(catalog,prefs,origin){
 async function dynamicPlan(prefs){
   let region;try{region=await cityRegion(prefs.city);}catch(e){if(e.providerCode==='CITY_NOT_FOUND')throw new HttpError(422,'未找到唯一城市，请填写完整城市名，例如苏州市；暂不支持直接填写省份或区县');throw e;}
   prefs.city=region.name;
+  if(prefs.province||prefs.district_adcode){
+    const {provinces}=await regionOptions();
+    const province=provinces.find(p=>(!prefs.province||p.name===prefs.province)&&p.cities.some(c=>c.adcode===region.adcode));
+    ensure(province,'所选省份与城市不匹配，请重新选择',422);prefs.province=province.name;
+    if(prefs.district_adcode){
+      const district=province.cities.find(c=>c.adcode===region.adcode).districts.find(d=>d.adcode===prefs.district_adcode);
+      ensure(district,'所选区县不属于当前城市，请重新选择',422);
+      prefs.district=district.name;region.district_adcode=district.adcode;
+    }
+  }
   const catalog=await cityPois(region,prefs.interests);
-  ensure(catalog.filter(p=>p.category!=='美食').length>=2,'该城市暂未检索到足够的有效景点，请换一个城市或稍后重试',422);
+  ensure(catalog.filter(p=>p.category!=='美食').length>=2,prefs.district?'该区县暂未检索到足够的有效景点，可选择全市范围或其他区县':'该城市暂未检索到足够的有效景点，请换一个城市或稍后重试',422);
   const days=[],visited=new Set();
   for(let i=0;i<prefs.days;i++){
     const date=new Date(Date.parse(prefs.date+'T00:00:00Z')+i*86400000).toISOString().slice(0,10);
@@ -75,7 +88,7 @@ async function dynamicPlan(prefs){
   const w=await weather(region),generated=new Date().toISOString();
   const note=await explain({city:region.name,interests:prefs.interests,days:days.map(d=>({date:d.date,stops:d.stops.map(s=>s.name)})),limitations:'地点来自高德，营业、票价与预约未核实；停留时长为规划估计；天气为实况而非出行日预报'},prefs.model_consent);
   return {id:randomUUID(),version:1,title:region.name+' · 自动漫游路线',preferences:prefs,days,weather:w,created_at:generated,data_mode:'live',poi_catalog:catalog,
-    route_pack:{id:randomUUID(),city:region.name,adcode:region.adcode,generated_at:generated,poi_count:catalog.length,source:'高德POI自动检索'},
+    route_pack:{id:randomUUID(),city:region.name,district:prefs.district||null,adcode:prefs.district_adcode||region.adcode,city_adcode:region.adcode,generated_at:generated,poi_count:catalog.length,source:'高德POI自动检索'},
     explanation:note||'按城市检索真实地点，优先串联相近且符合兴趣的节点，用高德步行距离和耗时筛选，并为停留预留缓冲。当前为待核实路线草案。',explanation_source:note?'DeepSeek':'自动规划规则',
     warnings:['营业时间、票价和预约要求尚未核实；未知费用不视为免费，暂不能保证总预算。','停留时长为规划估计，室内属性按地点类别推断；雨天候选需核实后使用。','仅规划步行；抵达第一站和离开最后一站的交通不计入。']};
 }

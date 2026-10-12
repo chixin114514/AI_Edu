@@ -1,19 +1,19 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createApp } from '../server/index.js';
-import { normalizePoi } from '../server/providers.js';
+import { normalizePoi, normalizeRegions } from '../server/providers.js';
 import { dispatch } from './harness.js';
 const input={city:'上海',date:'2026-10-15',days:1,budget:300,walk_limit_km:6,interests:['自然','人文'],start_time:'09:00',end_time:'18:00',companion:'独自',model_consent:false,start_poi:'auto'};
-function setup(t,{empty=false,mapFailure=false,huge=false}={}){
+function setup(t,{empty=false,mapFailure=false,huge=false,district=false}={}){
  const oldEnv={...process.env},oldFetch=globalThis.fetch,calls=[];
  Object.assign(process.env,{DATA_MODE:'live',AMAP_MAPS_API_KEY:'dynamic-'+Math.random(),AMAP_MIN_INTERVAL_MS:'0'});
  const app=createApp({database:':memory:'});let cookie='';
  globalThis.fetch=async url=>{
   const u=new URL(url);calls.push(u);assert.equal(u.origin,'https://restapi.amap.com');let d;
-  if(u.pathname==='/v3/config/district'){const name=u.searchParams.get('keywords');d={districts:name.includes('上海')?[{name:'上海市',adcode:'310000',level:'province',center:'121.47,31.23'}]:[]};}
+  if(u.pathname==='/v3/config/district'){const name=u.searchParams.get('keywords');d=name==='中国'?{districts:[{level:'country',districts:[{name:'上海市',adcode:'310000',level:'province',districts:[{name:'上海城区',adcode:'310100',level:'city',districts:[{name:'黄浦区',adcode:'310101',level:'district'},{name:'徐汇区',adcode:'310104',level:'district'}]}]}]}]}:{districts:name.includes('上海')?[{name:'上海市',adcode:'310000',level:'province',center:'121.47,31.23'}]:[]};}
   else if(u.pathname==='/v5/place/text'){
-   assert.equal(u.searchParams.get('region'),'310000');assert.equal(u.searchParams.get('city_limit'),'true');
-   d={pois:empty?[]:Array.from({length:18},(_,i)=>({id:'SH'+i,name:i>=15?'上海餐厅'+i:i>=11?'上海博物馆'+i:'上海公园'+i,type:i>=15?'餐饮服务':i>=11?'科教文化服务;博物馆':'风景名胜;公园广场;公园',typecode:i>=15?'050000':i>=11?'140100':'110101',adcode:'310101',location:`${121.47+i*.001},31.23`,address:'上海测试街道',business:{opentime_today:'09:00-17:00',cost:'100',rating:'4.5'}}))};
+   assert.equal(u.searchParams.get('region'),district?'310101':'310000');assert.equal(u.searchParams.get('city_limit'),'true');
+   d={pois:empty?[]:Array.from({length:18},(_,i)=>({id:'SH'+i,name:i>=15?'上海餐厅'+i:i>=11?'上海博物馆'+i:'上海公园'+i,type:i>=15?'餐饮服务':i>=11?'科教文化服务;博物馆':'风景名胜;公园广场;公园',typecode:i>=15?'050000':i>=11?'140100':'110101',adcode:district&&i===17?'310104':'310101',location:`${121.47+i*.001},31.23`,address:'上海测试街道',business:{opentime_today:'09:00-17:00',cost:'100',rating:'4.5'}}))};
   }else if(u.pathname==='/v3/direction/walking'){
    if(mapFailure)throw Error('secret upstream failure');
    d={route:{paths:[{distance:huge?'99999':'200',duration:'180',steps:[]}]}};
@@ -73,4 +73,21 @@ test('invalid commercial data stays unknown and reference spend never becomes a 
  assert.equal(result.per_capita_cost,58.5);assert.equal(result.rating,4.5);assert.equal(result.price,null);
  assert.equal(normalizePoi({...p,business:{rating:'5.1'}},region).rating,null);
  assert.equal(normalizePoi({...p,business:{rating:'5'}},region).rating,5);
+});
+
+test('district selection constrains provider search, catalog and stored route library',async t=>{
+ const {request}=setup(t,{district:true});const r=await request('/trip/plan',{...input,province:'上海市',district_adcode:'310101'});
+ assert.equal(r.status,201);assert.equal(r.body.preferences.district,'黄浦区');assert.equal(r.body.route_pack.adcode,'310101');assert.equal(r.body.route_pack.city_adcode,'310000');
+ assert.equal(r.body.poi_catalog.length,17);assert.ok(r.body.poi_catalog.every(p=>p.adcode==='310101'));
+ assert.ok(r.body.days[0].stops.every(p=>p.adcode==='310101'));
+});
+test('mismatched province or district rejected before POI search',async t=>{
+ const {request,calls}=setup(t);
+ for(const selection of [{province:'浙江省'},{province:'上海市',district_adcode:'330106'},{district_adcode:'310999'}])assert.equal((await request('/trip/plan',{...input,...selection})).status,422);
+ assert.equal((await request('/trip/plan',{...input,district_adcode:'bad'})).status,400);
+ assert.equal(calls.filter(u=>u.pathname==='/v5/place/text').length,0);
+});
+test('region hierarchy handles municipalities and excludes street-level options',()=>{
+ const provinces=normalizeRegions([{name:'上海市',adcode:'310000',districts:[{name:'上海城区',adcode:'310100',level:'city',districts:[{name:'黄浦区',adcode:'310101',level:'district'}]}]},{name:'海南省',adcode:'460000',districts:[{name:'屯昌县',adcode:'469022',level:'city',districts:[{name:'南坤镇',adcode:'469022',level:'street'}]}]}]);
+ assert.equal(provinces[0].cities[0].name,'上海市');assert.deepEqual(provinces[0].cities[0].districts,[{name:'黄浦区',adcode:'310101'}]);assert.deepEqual(provinces[1].cities[0].districts,[]);
 });

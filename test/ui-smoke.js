@@ -7,7 +7,7 @@ import { createApp } from '../server/index.js';
 import { dispatch } from './harness.js';
 test('frontend renders every view with real backend responses and completes suggestion flow',async t=>{
   const server=createApp({database:':memory:'});t.after(()=>server.emit('close'));let cookie='';
-  const nodes=new Map();const node=selector=>{if(!nodes.has(selector))nodes.set(selector,{innerHTML:'',textContent:'',classList:{add(){},remove(){},toggle(){}},addEventListener(){},setAttribute(){},showModal(){},close(){}});return nodes.get(selector);};
+  const nodes=new Map();const node=selector=>{if(!nodes.has(selector))nodes.set(selector,{innerHTML:'',textContent:'',querySelector:selector=>node(selector),classList:{add(){},remove(){},toggle(){}},addEventListener(){},setAttribute(){},showModal(){},close(){}});return nodes.get(selector);};
   const local=new Map(),document={querySelector:node,querySelectorAll:()=>[],addEventListener(){}};
   class FakeSensors extends EventTarget {constructor(){super();this.samples=[];}features(){return {};}stop(){} }
   const context=vm.createContext({console,document,window:{addEventListener(){},scrollTo(){},isSecureContext:false},navigator:{},location:{hash:''},history:{replaceState(){}},localStorage:{getItem:k=>local.get(k)??null,setItem:(k,v)=>local.set(k,v),removeItem:k=>local.delete(k)},setTimeout:()=>0,clearTimeout(){},Sensors:FakeSensors,routeMapMarkup:()=>'<div>高德地图</div>',mountRouteMaps(){},destroyRouteMaps(){},URL,Blob,fetch:async(url,options={})=>{

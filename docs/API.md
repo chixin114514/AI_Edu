@@ -138,3 +138,9 @@ DeepSeek仍只生成获授权的非健康行程说明，不自动接收低置信
 ### 城市下拉选项
 
 `GET /api/cities`：返回 `{cities: [{name, province, adcode}], source}`。实况模式从高德行政区划接口读取城市与直辖市，演示模式仅返回杭州。上游失败返回 503，前端保留常用城市和自动定位入口。
+
+### 省市区联动
+
+`GET /api/regions` 返回 `{provinces: [{name, adcode, cities: [{name, adcode, districts: [{name, adcode}]}]}], source}`。
+
+`POST /api/trip/plan` 可增加 `province`（省份名称）和 `district_adcode`（六位区县代码，空字符串或省略为全市范围）；省市区不匹配返回 422，字段格式错误返回 400。成功行程的 preferences 中包含已校验的区县名称 `district`，route_pack 中 `adcode` 为所选区县或全市代码，`city_adcode` 为所属城市代码。演示模式仅支持杭州全市样本。

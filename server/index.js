@@ -7,7 +7,7 @@ import { createStore } from './store.js';
 import { routeMap } from './maps.js';
 import { pois, byId } from './pois.js';
 import { createPlan, evaluate, ensure, HttpError, clock, minutes, schedule, approximateDistance } from './planner.js';
-import { decision, liveMode, providerFlags, providerStatus, resolveLocation, cityOptions } from './providers.js';
+import { decision, liveMode, providerFlags, providerStatus, resolveLocation, cityOptions, regionOptions } from './providers.js';
 const root=fileURLToPath(new URL('../public/',import.meta.url));
 const mime={'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8','.svg':'image/svg+xml','.json':'application/json'};
 const safeEqual=(a,b)=>{const x=Buffer.from(a),y=Buffer.from(b);return x.length===y.length&&timingSafeEqual(x,y);};
@@ -52,6 +52,10 @@ export function createApp({database=process.env.DATABASE_PATH||'./data/manxing.s
       if(path==='/api/pois'&&req.method==='GET')return send({pois});
       if(path==='/api/cities'&&req.method==='GET'){
         let result;try{result=await cityOptions();}catch{throw new HttpError(503,'完整城市列表暂不可用，请选择常用城市或使用自动定位');}
+        return send(result);
+      }
+      if(path==='/api/regions'&&req.method==='GET'){
+        let result;try{result=await regionOptions();}catch{throw new HttpError(503,'省市区列表暂不可用，请稍后重试');}
         return send(result);
       }
       if(path==='/api/location/resolve'&&req.method==='POST'){
