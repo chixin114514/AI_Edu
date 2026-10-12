@@ -9,7 +9,8 @@
 | Jev | TypeSafe官方 `/v1/systemone`，Choice结构化判断 | `TYPESAFE_API_KEY`、`TYPESAFE_BASE_URL`、`TYPESAFE_DEFAULT_MODEL` |
 | DeepSeek | `/chat/completions`，JSON说明生成 | `DEEPSEEK_API_KEY`、`DEEPSEEK_MODEL` |
 | 和风天气 | 默认Current Weather v1，杭州城区当前天气 | `QWEATHER_API_KEY`、`QWEATHER_API_BASE` |
-| 高德 | 行政区、城市POI检索、定位与步行路线；分城市天气 | `AMAP_MAPS_API_KEY`（兼容旧 `AMAP_KEY`） |
+| 高德 | 行政区、城市POI检索、地点检索、定位、步行路线、同城公交换乘；分城市天气 | `AMAP_MAPS_API_KEY`（兼容旧 `AMAP_KEY`） |
+| 地形高程 | Open Topo Data 公开 SRTM 90 米服务，按需查询海拔与坡段 | 无需密钥；可选 `OPEN_TOPO_API_BASE`、`OPEN_TOPO_DATASET`、`OPEN_TOPO_MIN_INTERVAL_MS` |
 
 本机 `.env` 已启用 `DATA_MODE=live`。实况规划已改为动态检索真实POI；营业、票价与预约仍待核实。演示模式保留杭州样本。Jev仅在会话获得授权且触发规则时调用；模拟健康事件不发送模型。DeepSeek仍只接收获授权的非健康行程内容。
 
@@ -81,7 +82,28 @@ npm run mcp:amap
 - [和风API Key鉴权](https://dev.qweather.com/en/docs/configuration/authentication/)
 - [和风旧版城市实况接口](https://dev.qweather.com/en/docs/api/weather/weather-now-webapi-v7/)
 - [高德步行路径规划](https://lbs.amap.com/api/webservice/guide/api/direction/)
+- [高德公交路径规划](https://lbs.amap.com/api/webservice/guide/api/direction/)
 - [Node.js代理支持](https://nodejs.org/learn/http/enterprise-network-configuration)
+- [Open Topo Data](https://www.opentopodata.org/)（公开 SRTM 服务，限速与数据集说明见其文档）
+
+### 公交换乘与地点检索
+
+`/api/transit` 调用高德 `/v3/direction/transit/integrated`，`city` 与 `cityd` 都传目标城市编码，只做同城换乘；`strategy=0`（最快捷）、`extensions=base`（不取折线，减小响应）。规范化时注意两点实测事实：
+
+- 未使用的交通方式高德也会返回空对象（`railway:{}`、`taxi:{}`），必须跳过，否则会被算成一次乘坐，换乘次数虚高、方案排序失真。
+- 无票价时 `cost` 是字符串 `"[]"`，必须当作未知而不是 0 元。
+
+同一段 `bus.buslines` 里名称含「地铁／轨道／轻轨／磁浮」的按 `subway` 归类，其余按 `bus`。
+
+`/api/places` 调用 `/v5/place/text`，按 `region`（行程城市的 `city_adcode`，没有行程时由 `/v3/config/district` 解析）+ `city_limit=true` 限定在城市范围内，`page_size=8`。刻意不做区县过滤，因为用户可能跨区去一个具体地址。演示模式或没有 Key 时直接返回 503，不用空列表冒充「查不到」。
+
+### 地形高程
+
+`/api/elevation` 调用 Open Topo Data 的 `/v1/{dataset}`，默认 `srtm90m`，单次请求最多 100 个坐标（后端采样上限 48，一次请求即可覆盖一天）。公开服务限速 1 次/秒，因此与高德调用一样串行排队，默认间隔 1200ms（可用 `OPEN_TOPO_MIN_INTERVAL_MS` 调整），不做重试以免把额度浪费在失败请求上。地形不会天天变，结果按坐标串缓存 24 小时，同时省下公开服务的每日额度。
+
+坐标必须先做 GCJ-02 → WGS-84 反解（`server/elevation.js`）：高程网格是 WGS-84，而项目内所有地点与折线都是 GCJ-02，偏移可达数百米，在陡坡路段会明显改变取样结果。反解用不动点迭代，境外坐标直接返回原值。
+
+无高程数据的点返回 `null`，相邻段整体跳过且不计入爬升——用 0 冒充海平面会凭空造出几十米的假爬升。负海拔（如吐鲁番盆地）是有效数据，不能与缺数据混为一谈。前端固定显示「SRTM 90 米网格高程估算，不是实测坡度」。
 
 ### 高德人均消费与评分
 

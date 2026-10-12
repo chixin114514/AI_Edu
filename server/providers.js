@@ -12,7 +12,10 @@ const configured = () => ({
   maps: Boolean(amapKey()),
   weather: Boolean(process.env.QWEATHER_API_KEY && process.env.QWEATHER_API_BASE),
   deepseek: Boolean(process.env.DEEPSEEK_API_KEY),
-  jev: Boolean(process.env.TYPESAFE_API_KEY || (process.env.JEV_GATEWAY_URL && process.env.JEV_API_KEY))
+  jev: Boolean(process.env.TYPESAFE_API_KEY || (process.env.JEV_GATEWAY_URL && process.env.JEV_API_KEY)),
+  // Open Topo Data 是无需密钥的公开高程服务，因此始终视为「已配置」；它是第三方公共服务，
+  // 有频率与每日额度限制，所以只支持按需查询，不做后台批量拉取。
+  elevation: true
 });
 export function providerStatus() {
   const flags = configured();
@@ -184,6 +187,87 @@ export async function leg(a,b) {
     return {distance_m:distance,duration_min:Math.ceil(duration/60),source:'高德步行路径规划',mode:'live',polyline:(p.steps||[]).flatMap(s=>(s.polyline||'').split(';').filter(Boolean).map(p=>p.split(',').map(Number))).filter(p=>p.length===2&&p.every(Number.isFinite))};
   });
 }
+// 公交/地铁换乘。高德要求 city 为城市级 adcode；跨城需要 cityd，本项目只做同城接驳。
+// 规范化后只保留用户能核对的事实：耗时、票价、步行距离、换乘次数和每一段坐什么。
+const optionalNumber = value => {
+  if(value===null||value===undefined||typeof value==='boolean')return null;
+  if(typeof value==='string'&&!value.trim())return null;
+  const n=Number(value);
+  return Number.isFinite(n)&&n>=0?n:null;
+};
+const truncated=(value,size=60)=>typeof value==='string'&&value.trim()?value.trim().slice(0,size):null;
+function transitSegment(segment){
+  const riding=[];
+  const walking=segment?.walking;
+  if(walking){
+    const distance=optionalNumber(walking.distance),duration=optionalNumber(walking.duration);
+    if(distance||duration)riding.push({type:'walk',line:null,from:null,to:null,stops:null,distance_m:distance,duration_min:duration===null?null:Math.ceil(duration/60)});
+  }
+  for(const line of Array.isArray(segment?.bus?.buslines)?segment.bus.buslines:[]){
+    riding.push({type:/地铁|轨道|轻轨|磁浮/.test(line?.name||'')?'subway':'bus',
+      line:truncated(line?.name),from:truncated(line?.departure_stop?.name),to:truncated(line?.arrival_stop?.name),
+      stops:optionalNumber(line?.via_num),distance_m:optionalNumber(line?.distance),
+      duration_min:optionalNumber(line?.duration)===null?null:Math.ceil(Number(line.duration)/60)});
+  }
+  // 高德对这一段没用到的交通方式也会返回空对象（railway:{}、taxi:{}）。
+  // 不加判断就会把它们算成一次乘坐，换乘次数和方案排序都会失真。
+  const railway=segment?.railway;
+  if(optionalNumber(railway?.distance)>0||truncated(railway?.name)||truncated(railway?.trip))
+    riding.push({type:'railway',line:truncated(railway.name)||truncated(railway.trip),from:truncated(railway.departure_stop?.name),to:truncated(railway.arrival_stop?.name),stops:null,distance_m:optionalNumber(railway.distance),duration_min:null});
+  const taxi=segment?.taxi;
+  if(optionalNumber(taxi?.distance)>0||optionalNumber(taxi?.duration)>0)
+    riding.push({type:'taxi',line:'出租车接驳',from:null,to:null,stops:null,distance_m:optionalNumber(taxi.distance),duration_min:optionalNumber(taxi.duration)===null?null:Math.ceil(Number(taxi.duration)/60)});
+  return riding;
+}
+export function normalizeTransit(data,{limit=3}={}){
+  const transits=data?.route?.transits;
+  if(!Array.isArray(transits)||!transits.length)throw providerError('NO_TRANSIT_ROUTE');
+  const options=[];
+  for(const transit of transits){
+    const duration=optionalNumber(transit.duration),distance=optionalNumber(transit.distance);
+    if(duration===null||distance===null)continue;
+    const segments=(Array.isArray(transit.segments)?transit.segments:[]).flatMap(transitSegment);
+    const rides=segments.filter(segment=>segment.type!=='walk').length;
+    options.push({
+      duration_min:Math.ceil(duration/60),distance_m:distance,
+      walking_distance_m:optionalNumber(transit.walking_distance),
+      // 高德在没有票价数据时返回字符串 "[]"，必须当作未知而不是 0 元。
+      cost:optionalNumber(transit.cost),transfers:Math.max(0,rides-1),rides,segments
+    });
+  }
+  if(!options.length)throw providerError('INVALID_RESPONSE');
+  options.sort((a,b)=>a.duration_min-b.duration_min||a.walking_distance_m-b.walking_distance_m);
+  return options.slice(0,limit);
+}
+export async function transitRoutes(from,to,city){
+  if(!liveMode())throw providerError('NOT_CONFIGURED');
+  return monitored('maps',async()=>{
+    const data=await amap('/v3/direction/transit/integrated',{origin:`${from.lng},${from.lat}`,destination:`${to.lng},${to.lat}`,city,cityd:city,strategy:0,extensions:'base'},{cacheable:false});
+    return {options:normalizeTransit(data),city,source:'高德公交换乘路径规划',mode:'live',updated_at:new Date().toISOString()};
+  });
+}
+// 地点检索：给「自定义起点／终点／必去地点」用。刻意不做区县过滤，因为用户完全可能跨区去一个具体地址。
+export function normalizePlace(poi){
+  if(typeof poi?.id!=='string'||!poi.id||typeof poi.name!=='string'||!poi.name.trim())return null;
+  const coords=typeof poi.location==='string'?poi.location.split(','):[];
+  if(coords.length!==2||coords.some(value=>!String(value).trim()))return null;
+  const [lng,lat]=coords.map(Number);
+  if(!Number.isFinite(lng)||!Number.isFinite(lat)||Math.abs(lng)>180||Math.abs(lat)>90)return null;
+  const type=typeof poi.type==='string'?poi.type:'';
+  return {id:poi.id,name:poi.name.trim().slice(0,150),lng,lat,coordinate_system:'GCJ-02',
+    address:typeof poi.address==='string'?poi.address.slice(0,200):'',
+    category:/餐|美食/.test(type)?'美食':/公园|风景|植物园|动物园/.test(type)?'自然':/博物馆|美术馆|展览|图书馆/.test(type)?'展览':/寺|教堂|建筑|塔/.test(type)?'建筑':'人文',
+    adcode:typeof poi.adcode==='string'?poi.adcode:''};
+}
+export async function searchPlaces(keyword,region,{limit=8}={}){
+  if(!liveMode())throw providerError('NOT_CONFIGURED');
+  return monitored('maps',async()=>{
+    const d=await amap('/v5/place/text',{keywords:keyword,region:region.district_adcode||region.adcode,city_limit:'true',page_size:limit,page_num:1});
+    const seen=new Set();
+    const places=(Array.isArray(d.pois)?d.pois:[]).map(normalizePlace).filter(place=>place&&!seen.has(place.id)&&seen.add(place.id));
+    return {places,keyword,region:region.name||'',source:'高德地点检索',mode:'live',updated_at:new Date().toISOString()};
+  });
+}
 export async function qweatherNow() {
   return monitored('weather',async()=>{
     if(!configured().weather)throw providerError('NOT_CONFIGURED');
@@ -256,6 +340,42 @@ export async function qweatherAlerts(lat,lng) {
       issued_at:text(a.issuedTime),effective_at:text(a.effectiveTime),expire_at:text(a.expireTime)
     })).filter(a=>a.headline||a.description);
     return save(cacheKey,{alerts,count:alerts.length,source:'和风天气预警（国家预警信息发布中心）',source_url:'https://www.qweather.com/',mode:'live',updated_at:new Date().toISOString()});
+  });
+}
+// 高程：Open Topo Data 公开服务（默认 SRTM 90m）。返回顺序与输入点严格一一对应，
+// 没有数据处是 null，由调用方决定怎么展示，绝不用 0 冒充海平面。
+let elevationQueue=Promise.resolve();
+let elevationLastRequest=0;
+export async function openTopoElevations(points){
+  if(!Array.isArray(points)||!points.length)throw providerError('INVALID_LOCATION');
+  const dataset=process.env.OPEN_TOPO_DATASET||'srtm90m';
+  const base=origin(process.env.OPEN_TOPO_API_BASE||'https://api.opentopodata.org');
+  const separator='|';
+  const locations=points.map(point=>point.lat.toFixed(5)+','+point.lng.toFixed(5)).join(separator);
+  const cacheKey='elevation:'+dataset+':'+locations;
+  const old=cached(cacheKey);if(old)return old;
+  return monitored('elevation',async()=>{
+    const run=elevationQueue.then(async()=>{
+      const shared=cached(cacheKey);if(shared)return shared;
+      // 公开服务限速 1 次/秒，排队并留出余量；可用 OPEN_TOPO_MIN_INTERVAL_MS 覆盖。
+      const configuredInterval=Number(process.env.OPEN_TOPO_MIN_INTERVAL_MS??1200);
+      const interval=Number.isFinite(configuredInterval)&&configuredInterval>=0?configuredInterval:1200;
+      const wait=Math.max(0,elevationLastRequest+interval-Date.now());if(wait)await delay(wait);
+      elevationLastRequest=Date.now();
+      const u=new URL('/v1/'+dataset,base);
+      u.searchParams.set('locations',locations);
+      const d=await json(u,{timeout:10000});
+      if(d.status!=='OK')throw providerError(!/^[A-Za-z_]{2,40}$/.test(d.status||'')?'INVALID_RESPONSE':'TOPODATA_'+d.status);
+      const results=Array.isArray(d.results)?d.results:[];
+      if(results.length!==points.length)throw providerError('INVALID_RESPONSE');
+      // 海拔可以是负数（如吐鲁番盆地），因此不能用「非负」的 optionalNumber，会把它误判成缺数据。
+      const optionalElevation=value=>value===null||value===undefined||value===''?null:(Number.isFinite(Number(value))?Number(value):null);
+      // 地形不会天天变，缓存 24 小时，顺带省下公开服务的每日额度。
+      return save(cacheKey,{elevations:results.map(result=>optionalElevation(result.elevation)),dataset,
+        source:'Open Topo Data',source_url:'https://www.opentopodata.org/',attributions:['SRTM（NASA / USGS）'],mode:'live',updated_at:new Date().toISOString()},86400000);
+    });
+    elevationQueue=run.catch(()=>{});
+    return run;
   });
 }
 export async function weather(region) {

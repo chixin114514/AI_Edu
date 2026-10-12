@@ -223,3 +223,144 @@ test('calibration action remains disabled after its click handler completes',asy
   await click(b,'calibrate');
   assert.equal(b.node('#calibrate').disabled,true);
 });
+
+// ---------------- 地点选择器 / 公交换乘 / 坡度 ----------------
+
+const toolsTrip={id:'trip-tools',version:1,data_mode:'live',title:'测试行程',explanation:'测试说明',explanation_source:'规划规则',poi_catalog:[],
+  preferences:{city:'杭州市',date:'2026-10-20',days:1,budget:300,walk_limit_km:6,interests:['自然'],start_time:'09:00',end_time:'18:00',companion:'独自',model_consent:false},
+  weather:{source:'测试天气',temperature:24,condition:'晴',time_label:'观测时间',updated_at:'2026-10-20T10:00:00Z'},
+  days:[{day:1,date:'2026-10-20',distance_m:1500,cost:0,unknown_cost_count:0,duration_min:180,skipped:[],plan_b:{stops:[]},
+    stops:[{id:'a',name:'甲地',category:'自然',lat:30.25,lng:120.15,duration_min:45,price:null,per_capita_cost:null,rating:null,recommendation_reason:'适合慢慢走',leg:{distance_m:0,duration_min:0,polyline:[],mode:'live'}},
+      {id:'b',name:'乙地',category:'人文',lat:30.26,lng:120.16,duration_min:45,price:null,per_capita_cost:null,rating:null,recommendation_reason:'可以停留',leg:{distance_m:1300,duration_min:18,polyline:[],mode:'live'}}]}]};
+const toolsResponses={
+  '/api/places':{places:[{id:'p1',name:'测试酒店',lng:121,lat:31,category:'人文',address:'测试路1号'}]},
+  '/api/transit':{options:[{duration_min:27,distance_m:1471,walking_distance_m:1274,cost:2,transfers:0,rides:1,segments:[{type:'walk',line:null,from:null,to:null,distance_m:511,duration_min:9},{type:'subway',line:'地铁1号线',from:'甲站',to:'乙站',distance_m:899,duration_min:12}]}],source:'高德公交换乘路径规划',updated_at:'2026-10-20T10:00:00Z'},
+  '/api/elevation':{samples:[{lat:30.25,lng:120.15,elevation:10,label:'甲地'},{lat:30.26,lng:120.16,elevation:32,label:'乙地'}],
+    segments:[{from_label:'甲地',to_label:'乙地',distance_m:1300,rise_m:20,grade_pct:1.5,level:'flat',level_label:'平缓'},{from_label:'乙地',to_label:'乙地',distance_m:200,rise_m:22,grade_pct:11,level:'steep',level_label:'陡坡'}],
+    summary:{gain_m:42,loss_m:0,min_m:10,max_m:32,max_up_grade_pct:11,steep_count:1,point_count:2,measured_count:2,length_m:1500,missing_count:0},
+    context:'第 1 天：甲地 → 乙地',dataset:'srtm90m',source:'Open Topo Data',attributions:['SRTM（NASA / USGS）'],
+    coordinate_note:'输入按 GCJ-02 解释，查询高程前已转换为 WGS-84。',accuracy_note:'SRTM 90 米网格高程估算，不是实测坡度。',updated_at:'2026-10-20T10:00:00Z'}
+};
+function toolsBrowser({handler}={}){
+  const sent=[];
+  const fetch=async(url,options)=>{
+    sent.push({url,body:options?.body?JSON.parse(options.body):undefined});
+    if(handler)return handler(url,options);
+    if(toolsResponses[url])return {ok:true,json:async()=>toolsResponses[url]};
+    throw new Error('unexpected '+url);
+  };
+  const b=browser({fetch});
+  b.run("state.config={data_mode:'live'};state.day=1;state.trip="+JSON.stringify(toolsTrip)+";");
+  b.sent=sent;
+  return b;
+}
+function clickNode(b,button){
+  Object.assign(button,{classList:{contains:()=>false}});
+  return b.handlers.get('click')({target:{closest:()=>button}});
+}
+
+test('地点选择器能检索地点并把它设为起点',async()=>{
+  const b=toolsBrowser();
+  await click(b,'pick-start');
+  assert.equal(b.node('#modal').open,true);
+  assert.match(b.node('#modal-content').innerHTML,/选择一个起点/);
+  await b.run("(async()=>runPlaceSearch('测试酒店'))()");
+  assert.match(b.node('#place-results').innerHTML,/测试酒店/);
+  assert.match(b.node('#place-results').innerHTML,/测试路1号/);
+  await clickNode(b,Object.assign(b.node('#place-0'),{id:'place-0',dataset:{place:'0'}}));
+  assert.equal(b.run('state.planStartPoint.name'),'测试酒店');
+  assert.equal(b.run('state.picker'),null);
+  assert.match(b.node('#toast').textContent,/起点/);
+  // 选完起点后回填到规划表单，按钮显示已选地点。
+  await b.run("(async()=>{state.page='plan';await render();})()");
+  assert.match(b.node('#app').innerHTML,/起点 · 测试酒店/);
+  assert.match(b.node('#app').innerHTML,/id="clear-start"/);
+});
+
+test('演示模式下地点检索明确不可用，不弹空选择器',async()=>{
+  const b=toolsBrowser();
+  b.run("state.config={data_mode:'demo'}");
+  await click(b,'pick-start');
+  assert.match(b.node('#toast').textContent,/实况服务/);
+  assert.notEqual(b.node('#modal').open,true);
+});
+
+test('自定义起点会随规划请求提交，行程生成后清空',async()=>{
+  const b=toolsBrowser({handler:async url=>{
+    if(url==='/api/trips')return {ok:true,json:async()=>({trips:[]})};
+    if(url==='/api/trip/plan')return {ok:true,json:async()=>({...toolsTrip,id:'trip-new'})};
+    throw new Error('unexpected '+url);
+  }});
+  b.run("state.planStartPoint={name:'测试酒店',lat:31,lng:121};state.planEndPoint={name:'测试车站',lat:31.1,lng:121.1}");
+  b.node('#use-start-point').checked=false;
+  const submit=b.handlers.get('#app:submit');
+  await submit({preventDefault(){},target:{id:'plan-form',values:{city:'杭州市',date:'2026-10-20',days:'1',budget:'300',walk_limit_km:'6'}}});
+  const plan=b.sent.find(entry=>entry.url==='/api/trip/plan');
+  assert.deepEqual(plan.body.start_point,{name:'测试酒店',lat:31,lng:121});
+  assert.deepEqual(plan.body.end_point,{name:'测试车站',lat:31.1,lng:121.1});
+  assert.equal(b.run('state.planStartPoint'),null);
+  assert.equal(b.run('state.planEndPoint'),null);
+});
+
+test('定位面板勾选后把当前位置作为起终点提交',async()=>{
+  const b=toolsBrowser({handler:async url=>{
+    if(url==='/api/trips')return {ok:true,json:async()=>({trips:[]})};
+    if(url==='/api/trip/plan')return {ok:true,json:async()=>({...toolsTrip,id:'trip-new'})};
+    throw new Error('unexpected '+url);
+  }});
+  b.run("state.location={district:'黄浦区',position:{lat:31.23,lng:121.47}}");
+  b.node('#use-start-point').checked=true;
+  b.node('#use-end-point').checked=true;
+  await b.handlers.get('#app:submit')({preventDefault(){},target:{id:'plan-form',values:{city:'杭州市',date:'2026-10-20',days:'1',budget:'300',walk_limit_km:'6'}}});
+  const plan=b.sent.find(entry=>entry.url==='/api/trip/plan');
+  assert.deepEqual(plan.body.start_point,{name:'黄浦区',lat:31.23,lng:121.47});
+  assert.deepEqual(plan.body.end_point,{name:'返回当前位置',lat:31.23,lng:121.47});
+});
+
+test('行程页能查询公交换乘并显示分段与票价',async()=>{
+  const b=toolsBrowser();
+  await b.run("(async()=>{state.page='trip';await render();})()");
+  assert.match(b.node('#app').innerHTML,/怎么去 · 公交换乘/);
+  assert.match(b.node('#app').innerHTML,/第1站 甲地/);
+  assert.equal(b.run('state.transit.from.name'),'第1站 甲地');
+  assert.equal(b.run('state.transit.to.name'),'第2站 乙地');
+  await click(b,'query-transit');
+  const html=b.node('#app').innerHTML;
+  assert.match(html,/地铁1号线/);
+  assert.match(html,/直达/);
+  assert.match(html,/约 ¥2/);
+  assert.match(html,/约 1274 m/);
+  const call=b.sent.find(entry=>entry.url==='/api/transit');
+  assert.equal(call.body.trip_id,'trip-tools');
+  assert.equal(call.body.from.name,'第1站 甲地');
+});
+
+test('行程页能计算并显示爬升与坡段',async()=>{
+  const b=toolsBrowser();
+  await b.run("(async()=>{state.page='trip';await render();})()");
+  assert.match(b.node('#app').innerHTML,/坡度与爬升/);
+  await click(b,'load-elevation');
+  const html=b.node('#app').innerHTML;
+  assert.match(html,/累计爬升/);
+  assert.match(html,/42 m/);
+  assert.match(html,/陡坡 1 段/);
+  assert.match(html,/值得留意的坡段/);
+  assert.match(html,/甲地 → 乙地/);
+  assert.match(html,/乙地 附近/,'同一站内的坡段不重复显示站名');
+  assert.match(html,/下坡|上坡/);
+  assert.match(html,/elevation-chart/);
+  assert.match(html,/不是实测坡度/);
+  assert.match(html,/Open Topo Data/);
+  const call=b.sent.find(entry=>entry.url==='/api/elevation');
+  assert.deepEqual(call.body,{trip_id:'trip-tools',day:1});
+});
+
+test('换乘与高程结果不会跨旅行日复用',async()=>{
+  const b=toolsBrowser();
+  const twoDay={...toolsTrip,days:[toolsTrip.days[0],{...toolsTrip.days[0],day:2,date:'2026-10-21'}]};
+  b.run('state.trip='+JSON.stringify(twoDay)+";state.transit={key:'trip-tools:1',from:{name:'旧',lat:30,lng:120},to:{name:'旧2',lat:30.1,lng:120.1},result:'stale',error:'',loading:false};state.elevation={key:'trip-tools:1',data:'stale',loading:false,error:''}");
+  await b.run('(async()=>{state.day=2;state.page="trip";await render();})()');
+  assert.equal(b.run('state.transit.result'),null);
+  assert.equal(b.run('state.elevation.data'),null);
+  assert.equal(b.run('state.transit.from.name'),'第1站 甲地');
+});

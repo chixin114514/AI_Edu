@@ -13,6 +13,9 @@
 | GET | `/config` | 数据模式、服务配置状态和隐私说明 |
 | GET | `/pois` | 演示POI列表 |
 | POST | `/location/resolve` | 坐标转换、识别地址并推荐试点起点（不保存定位） |
+| POST | `/places` | 在城市范围内按名称检索地点，供自定义起点／终点／必去节点使用 |
+| POST | `/transit` | 同城公交换乘方案（高德路径规划） |
+| POST | `/elevation` | 按行程或坐标查询海拔、累计爬升与坡段（Open Topo Data） |
 | GET | `/trips` | 当前账号或游客身份的行程 |
 | GET | `/route-packs` | 当前账号或游客身份按城市去重的最新自动路线包摘要 |
 | POST | `/trip/plan` | 编排行程并保存 |
@@ -148,6 +151,32 @@ DeepSeek仍只生成获授权的非健康行程说明，不自动接收低置信
 `GET /api/regions` 返回 `{provinces: [{name, adcode, cities: [{name, adcode, districts: [{name, adcode}]}]}], source}`。
 
 `POST /api/trip/plan` 可增加 `province`（省份名称）和 `district_adcode`（六位区县代码，空字符串或省略为全市范围）；省市区不匹配返回 422，字段格式错误返回 400。成功行程的 preferences 中包含已校验的区县名称 `district`，route_pack 中 `adcode` 为所选区县或全市代码，`city_adcode` 为所属城市代码。演示模式仅支持杭州全市样本。
+
+### 地点检索（自定义起点／终点／必去节点）
+
+`POST /api/places`，请求 `{"keyword":"西湖文化广场","trip_id":"…"}` 或 `{"keyword":"…","city":"杭州市"}`。二者必选其一：给了行程就用行程所在城市，否则按城市名解析行政区（解析不到返回 503）。`keyword` 去首尾空格后须为 2—40 字，否则 400。
+
+返回 `{places:[{id,name,address,lng,lat,category,coordinate_system:"GCJ-02",adcode}],keyword,region,source,mode,updated_at}`，最多 8 条，坐标非法或缺少名称的记录被丢弃。检索刻意不做区县过滤，因为用户可能跨区去一个具体地址；结果只在所选城市范围内（`city_limit=true`）。
+
+演示模式或未配置高德 Key 时返回 503 并提示需要开启实况服务，不返回空列表冒充「没有这个地点」。前端在实况模式下才显示选择入口。
+
+### 公交换乘
+
+`POST /api/transit`，请求 `{"from":{name,lat,lng},"to":{name,lat,lng},"trip_id":"…"}`；也可以给 `city`（六位城市编码）代替 `trip_id`。缺少城市编码返回 400（不猜城市），坐标非法返回 400，起终点相同返回 400。
+
+返回 `{options:[…],city,from,to,source,updated_at}`，`options` 按耗时升序最多 3 条，每条为 `{duration_min,distance_m,walking_distance_m,cost,transfers,rides,segments}`。`cost` 在高德未提供票价时为 `null`，不当作 0 元。`segments` 每项为 `{type,line,from,to,stops,distance_m,duration_min}`，`type` 取 `walk/bus/subway/railway/taxi`；高德对未使用的方式会返回空对象，后端会剔除，避免把空段算成一次乘坐而虚增换乘次数。
+
+仅支持同城换乘（不传 `cityd` 做跨城）。无方案、鉴权失败或上游异常统一返回 503，且不回传上游错误正文。演示模式返回 503。
+
+### 海拔、爬升与坡段
+
+`POST /api/elevation`，两种用法：`{"trip_id":"…","day":1}` 用当天全部站点加高德步行折线自动铺采样点（等间隔压缩到 48 个，首尾必留）；或 `{"points":[{name,lat,lng},…]}` 直接给 1—48 个点，用来查「当前位置」的单个海拔。
+
+输入按 GCJ-02 解释，查询前沿用标准算法反解为 WGS-84（高程数据集是 WGS-84 网格，几百米偏移在陡坡上足以改变取样）。
+
+返回 `{samples,segments,summary,context,dataset,source,source_url,attributions,coordinate_note,accuracy_note,updated_at}`。`samples` 的 `elevation` 在无数据处为 `null`；`segments` 为 `{from,to,from_label,to_label,distance_m,rise_m,grade_pct,level,level_label}`，`level` 取 `flat/gentle/noticeable/steep`。任一相邻点缺高程时该段被跳过，不会用 0 米补齐造出假爬升。`summary` 含 `point_count/measured_count/length_m/gain_m/loss_m/min_m/max_m/max_up_grade_pct/max_down_grade_pct/steep_count/missing_count`。负海拔是有效数据。
+
+行程不属于当前身份返回 404、旅行日无效返回 400、高程服务异常返回 503。`accuracy_note` 固定说明这是 SRTM 90 米网格估算、不是实测坡度。
 
 
 ## 注册与登录
