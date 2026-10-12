@@ -166,3 +166,18 @@ TypeSafe正式请求格式、概率校验、模型授权阻断、超时／401／
 - WebKit / iPhone 13 视口，真实HTTPS后端、模拟手表上传：不同意不可配对，配对后显示75 bpm，至少30秒且6条不同采样后完成基线；断流20秒后旧值清空；停止后旧设备token返回401；320/390/430px均无页面横向溢出，无页面脚本错误。
 - 证据（本地忽略目录）：`artifacts/test-watch.log`、`artifacts/watch-browser-result.json`、`artifacts/watch-pairing-webkit.png`、`artifacts/watch-live-webkit.png`。模拟读数只用于隔离的内存测试服务，不写生产行程，不代表真实手表已连接。
 - `apple/project.yml` YAML已解析检查，Swift源码对照Apple HealthKit文档审阅。Linux没有Xcode或Apple SDK，原生工程尚未编译或签名；系统授权、真实采样、watchOS后台网络、手表证书信任和耗电仍需Mac与真机验收，步骤见 `apple/README.md`。
+
+## Apple Watch 前端接续（2026-10-12，master b205ff7）
+
+将团队新增的 Watch/Safari 临时转发接入已有手机改版，保留原生应用和后端接口。以下是本轮实测，不能视为 Apple Watch 真机验收。
+
+- 设备区域保持次级入口，区分 Apple Watch 与网页蓝牙。配对引导说明安装、地址、权限三步；临时转发需主动勾选。配对码仅放在页面内存，关闭弹窗后可重新查看；已配对和过期码不再展示。
+- 修复重复生成、关闭或 Escape 取消后迟到弹窗、会话/账号切换后的旧响应。设备层增加连接代际检查，旧 Watch/蓝牙请求不能覆盖新连接；返回前台后不复用旧基线与趋势，允许显示仍新鲜的最近样本。
+- `npm run check` 通过；`npm test` 共 **102 项**通过：原有 70 项、18 项 Watch 测试、14 项前端测试。新增 6 项界面回归和 9 项设备/请求回归；合并后的初始基线为 87 项。
+- Chromium 使用真实本地 `/api/watch/link`、`pair`、`sample`、`state`、`unlink` 完成游客漫游联调：发送合成的 78 bpm 读数后网页显示该值，配对码消失，基线按钮可用；20 秒断流后清空读数与波形、禁用基线按钮；断开后旧设备令牌返回 401。
+- 用浏览器网络拦截延迟配对请求，按 Escape 后释放响应，弹窗未重开；模拟 HTML 503 后显示可读错误，解除拦截可成功重试。没有把合成读数作为硬件结果或健康建议。
+- 320/390/768/1440px 下页面宽度分别等于视口宽度；配对弹窗宽 288/358/540/540px，弹窗 scrollWidth 等于 clientWidth，无横向溢出。未捕获页面 JavaScript 异常；地图/定位无密钥产生的 503 与故障测试中的 503 另计。
+- 配对过期、跨账号与跨会话、后台样本、迟到蓝牙连接等边界由回归测试覆盖。本轮未编译/签名 watchOS 工程，未测试真实 Watch、Safari 硬件权限、实际耗电或外网 HTTPS 证书。
+- 截图保存在未跟踪的 `artifacts/mobile-experience/watch-setup-{320,390,768,1440}.png`、`watch-code-390.png`、`watch-live-390.png`；测试记录为 `watch-tests.txt`。浏览器旧标签可能仍由旧 Service Worker 控制，关闭旧标签再打开可启用本轮 v18 缓存。
+
+补充审查回归：允许后台处理连接终止通知，避免前台轮询在切后台时结束后界面永久停留于暂停状态；采集基线按钮在点击处理结束后仍保持禁用，避免重复点击重启采集。两项均观察到失败后修复通过。

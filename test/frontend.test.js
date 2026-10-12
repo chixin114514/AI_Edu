@@ -14,7 +14,7 @@ function browser({ stored = new Map(), fetch = async () => ({ ok: true, json: as
       innerHTML: '', textContent: '', value: '', dataset: {}, querySelector: selector => node(selector),
       classList: { add() {}, remove() {}, toggle() {} },
       addEventListener(type, fn) { const key=`${selector}:${type}`,previous=handlers.get(key);handlers.set(key, previous ? async e => { await previous(e); return fn(e); } : fn); },
-      setAttribute() {}, removeAttribute() {}, focus() {}, showModal() {}, close() {}
+      setAttribute(name, value) { this[name] = value; }, removeAttribute(name) { delete this[name]; }, focus() {}, showModal() { this.open=true; }, close() { this.open=false; }
     });
     return nodes.get(selector);
   };
@@ -26,7 +26,7 @@ function browser({ stored = new Map(), fetch = async () => ({ ok: true, json: as
   const context = vm.createContext({
     console, document: { querySelector: node, querySelectorAll: () => [], addEventListener: (type, fn) => handlers.set(type, fn) },
     window: { addEventListener() {}, scrollTo() {}, isSecureContext: false },
-    navigator: {}, location: { hash: '' }, history: { replaceState() {} },
+    navigator: {}, location: { hash: '', origin: 'https://travel.example' }, history: { replaceState() {} },
     localStorage: { getItem: key => stored.get(key) ?? null, setItem: (key, value) => stored.set(key, value), removeItem: key => stored.delete(key) },
     setTimeout: () => 0, clearTimeout() {}, Sensors: FakeSensors, cleanStopReason, defaultStopReason, routeMapMarkup:()=>'',mountRouteMaps(){},destroyRouteMaps(){}, URL, Blob, AbortController,
     FormData: class { constructor(form) { return Object.entries(form.values)[Symbol.iterator](); } }, fetch
@@ -157,4 +157,69 @@ test('background generation refreshes the visible journey without changing the s
   assert.match(b.node('#app').innerHTML, /你的行程已准备好/);
   assert.doesNotMatch(b.node('#app').innerHTML, /先有方向/);
   }finally{finishHistory();await first;}
+});
+
+function click(b, id) {
+  const button=b.node('#'+id);Object.assign(button,{id,dataset:{},classList:{contains:()=>false}});
+  return b.handlers.get('click')({target:{closest:()=>button}});
+}
+function watchBrowser() {
+  const b=browser();
+  b.run("state.session={id:'session-a',status:'active'};sensors.disconnect=()=>{};");
+  return b;
+}
+test('watch setup requires explicit consent and keeps its code in page memory only',async()=>{
+  const b=watchBrowser();
+  b.run('sensors.connectWatch=async()=>{state.sensor={source:"watch",watchStatus:"waiting"};return {code:"AABBCCDD",pair_expires_at:Date.now()+300000}}');
+  await click(b,'connect-watch');await click(b,'confirm-watch');
+  assert.match(b.node('#toast').textContent,/同意/);
+  b.node('#watch-relay-consent').checked=true;await click(b,'confirm-watch');
+  assert.match(b.node('#watch-dialog-state').innerHTML,/AABB CCDD/);
+  b.run('closeModal()');await click(b,'view-watch');
+  assert.match(b.node('#watch-dialog-state').innerHTML,/AABB CCDD/);
+  assert.doesNotMatch(JSON.stringify([...b.stored]),/AABB|relay_consent/);
+});
+test('closing pending watch setup cancels once and cannot reopen a stale dialog',async()=>{
+  const b=watchBrowser();let release,starts=0,stops=0;
+  b.run('sensors').connectWatch=()=>{starts++;return new Promise(r=>release=r);};
+  b.run('sensors').disconnect=()=>{stops++;};
+  await click(b,'connect-watch');b.node('#watch-relay-consent').checked=true;
+  const first=click(b,'confirm-watch');void click(b,'confirm-watch');
+  assert.equal(starts,1);
+  b.run('closeModal()');release({code:'AABBCCDD',pair_expires_at:Date.now()+300000});await first;
+  assert.equal(b.node('#modal').open,false);assert.equal(stops,1);
+  assert.equal(b.run('state.watchPairing'),null);
+});
+test('watch pairing response cannot cross an account or travel session change',async()=>{
+  for(const change of ["accountRevision++;state.session=null", "state.session={id:'session-b',status:'active'}"]){
+    const b=watchBrowser();let release;
+    b.run('sensors').connectWatch=()=>new Promise(r=>release=r);
+    await click(b,'connect-watch');b.node('#watch-relay-consent').checked=true;
+    const pending=click(b,'confirm-watch');b.run(change);
+    release({code:'AABBCCDD',pair_expires_at:Date.now()+300000});await pending;
+    assert.equal(b.run('state.watchPairing'),null);
+    assert.doesNotMatch(b.node('#modal-content').innerHTML,/AABB/);
+  }
+});
+test('expired or paired watch codes disappear and disconnected waveform resets',async()=>{
+  const b=watchBrowser();b.run("state.watchPairing={session_id:'session-a',code:'AABBCCDD',pair_expires_at:Date.now()-1};state.sensor={source:'watch',watchStatus:'waiting'};updateSensors()");
+  assert.match(b.node('#watch-dialog-state').innerHTML,/过期/);
+  assert.doesNotMatch(b.node('#watch-dialog-state').innerHTML,/AABB/);
+  b.run("state.watchPairing={session_id:'session-a',code:'AABBCCDD',pair_expires_at:Date.now()+300000};state.sensor={source:'watch',watchStatus:'waiting_for_sample'};updateSensors()");
+  assert.doesNotMatch(b.node('#watch-dialog-state').innerHTML,/AABB/);
+  assert.equal(b.run('state.watchPairing.code'),null);
+  b.run("state.sensor={source:'watch',watchStatus:'disconnected',hr:null};updateSensors()");
+  assert.equal(b.node('#pulse-line').d,'M0 30h350');assert.equal(b.node('#calibrate').disabled,true);
+});
+test('paused journeys cannot start watch relay setup',async()=>{
+  const b=watchBrowser();b.run("state.session.status='paused'");await click(b,'connect-watch');
+  assert.match(b.node('#toast').textContent,/暂停/);assert.notEqual(b.node('#modal').open,true);
+});
+
+test('calibration action remains disabled after its click handler completes',async()=>{
+  const b=watchBrowser();
+  b.run("state.sensor={source:'watch',watchStatus:'live',connected:true,hr:78,calibrating:false};sensors.calibrate=()=>{state.sensor.calibrating=true;updateSensors()};updateSensors()");
+  assert.equal(b.node('#calibrate').disabled,false);
+  await click(b,'calibrate');
+  assert.equal(b.node('#calibrate').disabled,true);
 });

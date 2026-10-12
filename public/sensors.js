@@ -7,22 +7,27 @@ export function parseHeartRate(view){
   return value>=25&&value<=240?value:null;
 }
 export class Sensors extends EventTarget{
-  constructor(){super();this.source=null;this.watchStatus=null;this.watchSequence=0;this.watch=new WatchLink(v=>this.receiveWatch(v));this.hr=null;this.baseline=null;this.samples=[];this.steps=[];this.cadence=null;this.totalSteps=0;this.calibrating=false;this.highSince=null;this.lastPeak=0;this.motionActive=false;this.lastMotion=0;this.position=null;this.onMotion=this.onMotion.bind(this);this.hidden=()=>{if(document.hidden){this.highSince=null;this.steps=[];this.cadence=null;this.samples=[];this.calibrating=false;this.emit('页面已进入后台，趋势窗口已重置');}};document.addEventListener('visibilitychange',this.hidden);this.timer=setInterval(()=>{const now=Date.now();if(this.lastHr&&now-this.lastHr>(this.source==='watch'?20000:10000)){this.hr=null;this.highSince=null;this.samples=[];}if(this.lastMotion&&now-this.lastMotion>5000)this.cadence=null;this.steps=this.steps.filter(t=>t>now-60000);this.emit();},2000);}
+  constructor(){super();this.connectionRevision=0;this.source=null;this.watchStatus=null;this.watchSequence=0;this.watch=new WatchLink(v=>this.receiveWatch(v));this.hr=null;this.baseline=null;this.samples=[];this.steps=[];this.cadence=null;this.totalSteps=0;this.calibrating=false;this.highSince=null;this.lastPeak=0;this.motionActive=false;this.lastMotion=0;this.position=null;this.onMotion=this.onMotion.bind(this);this.hidden=()=>{if(document.hidden){this.hr=null;this.baseline=null;this.lastHr=null;if(this.source==='watch'){this.watchStatus='background';this.watchSampleAfter=Date.now();}this.highSince=null;this.steps=[];this.cadence=null;this.samples=[];this.calibrating=false;this.emit('页面已进入后台，趋势窗口已重置');}};document.addEventListener('visibilitychange',this.hidden);this.timer=setInterval(()=>{const now=Date.now();if(this.lastHr&&now-this.lastHr>(this.source==='watch'?20000:10000)){this.hr=null;this.highSince=null;this.samples=[];if(this.source==='watch'&&this.watchStatus==='live')this.watchStatus='waiting_for_sample';}if(this.lastMotion&&now-this.lastMotion>5000)this.cadence=null;this.steps=this.steps.filter(t=>t>now-60000);this.emit();},2000);}
   emit(message){this.dispatchEvent(new CustomEvent('change',{detail:{hr:this.hr,baseline:this.baseline,cadence:this.cadence,steps:this.totalSteps,connected:this.source==='watch'?this.watchStatus==='live':!!this.device?.gatt?.connected,source:this.source,watchStatus:this.watchStatus,calibrating:this.calibrating,position:this.position,message}}));}
   async connect(){
     if(!window.isSecureContext)throw Error('蓝牙需要HTTPS或本机localhost安全环境。');
     if(!navigator.bluetooth)throw Error('当前浏览器不支持网页蓝牙。iPhone上的Chrome也不支持；可继续使用无设备模式。');
-    this.disconnect();this.source='bluetooth';
-    this.device=await navigator.bluetooth.requestDevice({filters:[{services:['heart_rate']}]});
-    this.device.addEventListener('gattserverdisconnected',()=>{if(this.source!=='bluetooth')return;this.hr=null;this.baseline=null;this.samples=[];this.highSince=null;this.calibrating=false;this.emit('设备已断开，已切换手动反馈模式。');},{once:true});
-    const server=await this.device.gatt.connect();const service=await server.getPrimaryService('heart_rate');const characteristic=await service.getCharacteristic('heart_rate_measurement');
-    await characteristic.startNotifications();
+    this.disconnect();this.source='bluetooth';const revision=this.connectionRevision;
+    const device=await navigator.bluetooth.requestDevice({filters:[{services:['heart_rate']}]});
+    const ensureCurrent=()=>{if(revision!==this.connectionRevision){if(this.device!==device)device.gatt.disconnect();throw Error('连接已取消');}};
+    ensureCurrent();this.device=device;
+    device.addEventListener('gattserverdisconnected',()=>{if(revision!==this.connectionRevision||this.source!=='bluetooth')return;this.hr=null;this.baseline=null;this.samples=[];this.highSince=null;this.calibrating=false;this.emit('设备已断开，已切换手动反馈模式。');},{once:true});
+    const server=await device.gatt.connect();ensureCurrent();
+    const service=await server.getPrimaryService('heart_rate');ensureCurrent();
+    const characteristic=await service.getCharacteristic('heart_rate_measurement');ensureCurrent();
+    await characteristic.startNotifications();ensureCurrent();
     characteristic.addEventListener('characteristicvaluechanged',event=>{
-      if(this.source!=='bluetooth')return;
+      if(revision!==this.connectionRevision||this.source!=='bluetooth')return;
       let value;try{value=parseHeartRate(event.target.value);}catch{return;}
       this.receiveHeartRate(value,Date.now());
     });this.emit('设备已连接。请坐下休息后，点击“采集静息基线”。');
   }
+
   receiveHeartRate(value,now){
       if(!value||document.hidden){this.hr=null;this.highSince=null;return;}
       if(this.lastHr&&now-this.lastHr>(this.source==='watch'?20000:5000)){this.highSince=null;if(this.calibrating){this.samples=[];this.calibrationStart=now;}}
@@ -32,19 +37,21 @@ export class Sensors extends EventTarget{
       this.emit();
   }
   async connectWatch(session_id){
-    this.disconnect();this.source='watch';this.watchSequence=0;this.watchStatus='waiting';
-    try{return await this.watch.start(session_id);}catch(error){this.source=null;this.watchStatus=null;this.emit();throw error;}
+    this.disconnect();const revision=this.connectionRevision;this.source='watch';this.watchSequence=0;this.watchStatus='waiting';
+    try{return await this.watch.start(session_id);}catch(error){if(revision===this.connectionRevision){this.source=null;this.watchStatus=null;this.emit();}throw error;}
   }
   receiveWatch(result){
-    if(this.source!=='watch')return;
+    if(this.source!=='watch'||(document.hidden&&result.status!=='disconnected'))return;
     const previous=this.watchStatus;this.watchStatus=result.status;
-    if(result.sample&&result.sample.sequence>this.watchSequence){
+    if(result.status==='live'&&result.sample&&result.sample.sequence>this.watchSequence&&(!this.watchSampleAfter||result.sample.timestamp>this.watchSampleAfter)){
       this.watchSequence=result.sample.sequence;this.receiveHeartRate(result.sample.bpm,result.sample.timestamp);
     }else if(result.status!=='live'){this.hr=null;this.highSince=null;this.samples=[];if(this.calibrating){this.calibrationStart=Date.now();}}
+    if(result.status==='live'&&!this.hr)this.watchStatus='waiting_for_sample';
+    if(result.status==='disconnected'){this.baseline=null;this.calibrating=false;}
     this.emit(previous!==result.status&&result.status==='disconnected'?'Apple Watch连接已结束，请重新配对。':undefined);
   }
   calibrate(){if(!(this.source==='watch'?this.watchStatus==='live':this.device?.gatt?.connected))throw Error('请先连接心率设备并等待实时读数。');this.calibrating=true;this.calibrationStart=Date.now();this.samples=[];this.baseline=null;this.highSince=null;this.emit('请静坐30秒，保持页面在前台。');}
-  disconnect(){this.source=null;this.watchStatus=null;this.watchSequence=0;this.watch.stop().catch(()=>this.emit('未能通知服务端断开手表，请在手表上停止采集或联网后结束行程。'));this.device?.gatt?.disconnect();this.hr=null;this.baseline=null;this.samples=[];this.highSince=null;this.calibrating=false;this.lastHr=null;this.emit();}
+  disconnect(){this.connectionRevision=(this.connectionRevision||0)+1;this.source=null;this.watchStatus=null;this.watchSequence=0;this.watchSampleAfter=null;this.watch.stop().catch(()=>this.emit('未能通知服务端断开手表，请在手表上停止采集或联网后结束行程。'));const device=this.device;this.device=null;device?.gatt?.disconnect();this.hr=null;this.baseline=null;this.samples=[];this.highSince=null;this.calibrating=false;this.lastHr=null;this.emit();}
   async startMotion(){
     if(!window.DeviceMotionEvent)throw Error('当前浏览器不支持运动传感器。');
     if(typeof DeviceMotionEvent.requestPermission==='function'&&await DeviceMotionEvent.requestPermission()!=='granted')throw Error('未获得运动权限，可使用手动反馈。');
