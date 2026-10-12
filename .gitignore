@@ -16,3 +16,10 @@ certs/
 *.csr
 *.p12
 *.pfx
+# Generated Apple build and local signing settings
+apple/*.xcodeproj/
+apple/Generated/
+apple/build/
+apple/Local.xcconfig
+*.xcuserstate
+xcuserdata/

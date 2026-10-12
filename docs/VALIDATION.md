@@ -4,7 +4,7 @@
 
 `npm run check`：服务端入口、前端主脚本、传感器脚本语法检查通过。
 
-`npm test`：70项通过（14项核心、1项前后端冒烟、18项服务适配、8项定位、13项动态路线、6项地图、4项 HTTPS、6项账号权限）。HTTPS 测试需要安装 OpenSSL 1.1.1+。
+`npm test`：79项通过（14项核心、1项前后端冒烟、18项服务适配、8项定位、13项动态路线、6项地图、4项 HTTPS、6项账号权限、9项手表转发）。HTTPS 测试需要安装 OpenSSL 1.1.1+。
 
 - 预算、步行上限、营业窗口、两日行程与周一闭馆筛选。
 - 城市、日期、时间、预算、授权与类型参数校验。
@@ -144,3 +144,11 @@ TypeSafe正式请求格式、概率校验、模型授权阻断、超时／401／
 - 真实高德与 DeepSeek 联调：一日6站均返回并保存 DeepSeek 说明。首次高德请求出现 ECONNRESET，重试成功；未伪造实况路线。
 - Chromium 与 WebKit iPhone 模拟检查320／390／430px布局、数据存在时才显示指标、刷新后说明保留、旧行程缺字段时规则说明兼容，无横向溢出或页面脚本错误。
 - 结果：`artifacts/stop-reasons-result.json`、`artifacts/scenery-list-*.png`、`artifacts/test-stop-reasons.log`（均不提交）。
+
+
+## Apple Watch＋Safari（2026-10-12）
+
+- `npm run check` 和完整 `npm test` 通过，共79项（新增9项 Watch relay / 浏览器连接生命周期测试）。新增覆盖一次性码、5分钟过期、4小时连接过期、20秒最新值失效、身份隔离、读数校验、防重放、发送限流、配对猜测限流、明确授权、原始值不进入行程导出、结束/退出/删除/账号迁移/紧急暂停撤销、异步取消与重新连接，以及基线去重。
+- WebKit / iPhone 13 视口，真实HTTPS后端、模拟手表上传：不同意不可配对，配对后显示75 bpm，至少30秒且6条不同采样后完成基线；断流20秒后旧值清空；停止后旧设备token返回401；320/390/430px均无页面横向溢出，无页面脚本错误。
+- 证据（本地忽略目录）：`artifacts/test-watch.log`、`artifacts/watch-browser-result.json`、`artifacts/watch-pairing-webkit.png`、`artifacts/watch-live-webkit.png`。模拟读数只用于隔离的内存测试服务，不写生产行程，不代表真实手表已连接。
+- `apple/project.yml` YAML已解析检查，Swift源码对照Apple HealthKit文档审阅。Linux没有Xcode或Apple SDK，原生工程尚未编译或签名；系统授权、真实采样、watchOS后台网络、手表证书信任和耗电仍需Mac与真机验收，步骤见 `apple/README.md`。

@@ -7,6 +7,7 @@ import { resolve, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createStore } from './store.js';
 import { createAuth } from './auth.js';
+import { createWatchRelay } from './watch-relay.js';
 import { routeMap } from './maps.js';
 import { pois, byId } from './pois.js';
 import { createPlan, evaluate, ensure, HttpError, clock, minutes, schedule, approximateDistance } from './planner.js';
@@ -19,7 +20,7 @@ async function body(req){
   try{const b=JSON.parse(s);ensure(b&&typeof b==='object'&&!Array.isArray(b),'请求须为对象');return b;}catch(e){if(e instanceof HttpError)throw e;throw new HttpError(400,'JSON格式错误');}
 }
 export function createApp({database=process.env.DATABASE_PATH||'./data/manxing.sqlite',tls}={}){
-  const store=createStore(database), auth=createAuth(store),limits=new Map();
+  const store=createStore(database), auth=createAuth(store),watch=createWatchRelay(),limits=new Map();
   const locks=new Set();
   const handler=async(req,res)=>{
     res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Referrer-Policy','no-referrer');
@@ -34,6 +35,19 @@ export function createApp({database=process.env.DATABASE_PATH||'./data/manxing.s
         const file=resolve(root,'.'+(path==='/'?'/index.html':decodeURIComponent(path)));
         ensure(file.startsWith(root)&&!!mime[extname(file)],'页面不存在',404);
         try{const content=await readFile(file);res.writeHead(200,{'Content-Type':mime[extname(file)],'Cache-Control':'no-cache'});res.end(req.method==='HEAD'?undefined:content);}catch{throw new HttpError(404,'页面不存在');}return;
+      }
+      if(path.startsWith('/api/watch/')){
+        const host=new URL('http://'+req.headers.host).hostname;
+        const loopback=['localhost','127.0.0.1','[::1]'].includes(host)&&['127.0.0.1','::1','::ffff:127.0.0.1'].includes(req.socket.remoteAddress);
+        ensure(req.socket.encrypted||loopback,'Apple Watch连接需要HTTPS',400);
+      }
+      if(['/api/watch/pair','/api/watch/sample','/api/watch/disconnect'].includes(path)){
+        ensure(req.method==='POST','方法不支持',405);
+        ensure(!req.headers.origin||new URL(req.headers.origin).host===req.headers.host,'跨站请求已拒绝',403);
+        const input=await body(req),token=req.headers.authorization?.match(/^Bearer ([a-f0-9]{64})$/)?.[1];
+        if(path.endsWith('/pair'))return send(watch.pair(input.code,req.socket.remoteAddress));
+        if(path.endsWith('/sample'))return send(watch.sample(token,input));
+        return send(watch.disconnect(token));
       }
       const cookies=req.headers.cookie||'';
       const secure=Boolean(req.socket.encrypted||process.env.COOKIE_SECURE==='true'),outCookies=[];
@@ -53,17 +67,31 @@ export function createApp({database=process.env.DATABASE_PATH||'./data/manxing.s
       if(path==='/api/auth/me'&&req.method==='GET')return send({user});
       if(['/api/auth/register','/api/auth/login'].includes(path)&&req.method==='POST'){
         const result=await auth.authenticate(b,{register:path.endsWith('/register'),ip:req.socket.remoteAddress,cookies,guest,secure});
+        watch.revokeOwner(guest);watch.revokeOwner('user:'+result.user.id);if(user)watch.revokeOwner(owner);
         setCookie(result.cookie);return send({user:result.user},path.endsWith('/register')?201:200);
       }
       if(path==='/api/auth/logout'&&req.method==='POST'){
-        setCookie(auth.logout(cookies,secure));setCookie(guestCookie(randomBytes(24).toString('hex')));return send({user:null});
+        watch.revokeOwner(owner);setCookie(auth.logout(cookies,secure));setCookie(guestCookie(randomBytes(24).toString('hex')));return send({user:null});
       }
       if(path==='/api/ops'||path.startsWith('/api/ops/')){ensure(user,'请先登录管理员账号',401);ensure(user.role==='admin','仅管理员可访问运营工作台',403);}
       const get=(kind,id)=>{ensure(typeof id==='string','缺少标识');const v=store.get(kind,id,owner);ensure(v,'记录不存在',404);return v;};
       const session=()=>{const s=get('session',b.session_id);ensure(!s.ended_at,'行程已结束',409);return s;};
       const put=(kind,v)=>store.put(kind,v,owner);
       if(req.method==='POST') {lockKey=owner;ensure(!locks.has(lockKey),'上一操作仍在处理中，请稍后重试',409);locks.add(lockKey);acquired=true;}
-      if(path==='/api/config'&&req.method==='GET')return send({data_mode:liveMode()?'live':'demo',dynamic_planning:liveMode(),city:'杭州',providers:providerFlags(),provider_status:providerStatus(),health_notice:'仅辅助调整旅行节奏，不作医学判断。',privacy:'心率原始值留在浏览器；服务端仅保存事件类型、累计步行和确认记录，不保存上传的健康特征。'});
+      if(path==='/api/watch/link'&&req.method==='POST'){
+        const s=session();ensure(s.status!=='paused','行程已暂停，不能开始心率采集',409);
+        ensure(b.relay_consent===true,'请同意心率经服务端临时转发');
+        return send(watch.create(owner,s.id),201);
+      }
+      if(path==='/api/watch/state'&&req.method==='GET'){
+        const sid=new URL(req.url,'http://local').searchParams.get('session_id'),s=get('session',sid);
+        if(s.ended_at||s.status==='paused')watch.revoke(owner,s.id);
+        return send(watch.state(owner,s.id));
+      }
+      if(path==='/api/watch/unlink'&&req.method==='POST'){
+        const s=get('session',b.session_id);watch.revoke(owner,s.id);return send({disconnected:true});
+      }
+      if(path==='/api/config'&&req.method==='GET')return send({data_mode:liveMode()?'live':'demo',dynamic_planning:liveMode(),city:'杭州',providers:providerFlags(),provider_status:providerStatus(),health_notice:'仅辅助调整旅行节奏，不作医学判断。',privacy:'蓝牙心率在浏览器处理；Apple Watch经单独授权后临时转发，服务端内存仅保留最新一条，20秒后清除，不落库、不写日志、不交给模型。服务端保存行程事件，不保存健康特征。'});
       if(path==='/api/pois'&&req.method==='GET')return send({pois});
       if(path==='/api/cities'&&req.method==='GET'){
         let result;try{result=await cityOptions();}catch{throw new HttpError(503,'完整城市列表暂不可用，请选择常用城市或使用自动定位');}
@@ -132,7 +160,7 @@ export function createApp({database=process.env.DATABASE_PATH||'./data/manxing.s
         let outcome=evaluate(f,trigger);
         s.walked_km=Math.max(s.walked_km,f.walked_km_today||0);
         if(outcome.status==='paused'){
-          s.status='paused';s.pending_suggestion=null;s.events.push({at:new Date().toISOString(),type:'unwell',status:'paused'});put('session',s);return send({...outcome,suggestion:'seek_help',require_confirm:false});
+          watch.revoke(owner,s.id);s.status='paused';s.pending_suggestion=null;s.events.push({at:new Date().toISOString(),type:'unwell',status:'paused'});put('session',s);return send({...outcome,suggestion:'seek_help',require_confirm:false});
         }
         if(outcome.action==='continue') {s.status='normal';put('session',s);return send({...outcome,require_confirm:false});}
         if(['state','hr_high_sustained','progress'].includes(trigger)&&Date.now()-s.last_suggestion_at<300000)return send({status:s.status,suggestion:'cooldown',reason:'建议冷却中，继续观察。',require_confirm:false});
@@ -175,7 +203,7 @@ export function createApp({database=process.env.DATABASE_PATH||'./data/manxing.s
         s.events.push({type:'checkin',stop_id:b.stop_id,at:new Date().toISOString()});
         s.current_index=Math.min(s.current_index+1,trip.days[s.day-1].stops.length);s.pending_suggestion=null;put('session',s);return send(s);
       }
-      if(path==='/api/session/end'&&req.method==='POST'){const s=get('session',b.session_id);s.ended_at??=new Date().toISOString();s.pending_suggestion=null;put('session',s);return send(s);}
+      if(path==='/api/session/end'&&req.method==='POST'){const s=get('session',b.session_id);watch.revoke(owner,s.id);s.ended_at??=new Date().toISOString();s.pending_suggestion=null;put('session',s);return send(s);}
       if(/^\/api\/trip\/[^/]+\/report$/.test(path)&&req.method==='GET'){
         const trip=get('trip',path.split('/')[3]),sessions=store.list('session',owner).filter(s=>s.trip_id===trip.id),events=sessions.flatMap(s=>s.events),suggestions=store.list('suggestion',owner).filter(s=>s.trip_id===trip.id);
         return send({trip_id:trip.id,title:trip.title,finished:sessions.length>0&&sessions.every(s=>s.ended_at),total_stops:trip.days.reduce((n,d)=>n+d.stops.length,0),visited_stops:new Set(events.filter(e=>e.type==='checkin').map(e=>e.stop_id)).size,walked_km:sessions.reduce((n,s)=>n+s.walked_km,0),planned_distance_km:trip.days.reduce((n,d)=>n+d.distance_m,0)/1000,accepted:suggestions.filter(s=>s.accepted===true).length,rejected:suggestions.filter(s=>s.accepted===false).length,events,preference_note:suggestions.some(s=>s.accepted)?'下次可以优先尝试更轻松的节奏；请在生成行程时确认。':'继续记录您的选择，逐步认识适合您的旅行节奏。',data_mode:trip.data_mode});
@@ -186,13 +214,13 @@ export function createApp({database=process.env.DATABASE_PATH||'./data/manxing.s
         const output=b.job==='poi_audit'?{summary:'已完成样本字段完整性检查。未抓取官方页面；以下记录仍需人工核验。',items:pois.map(p=>({name:p.name,result:!p.verified?'待核验':'已核验',source:p.source_url,missing:['name','source_url','updated_at','open','close'].filter(k=>!p[k])}))}:{summary:'当前浏览器反馈的规则聚类（未调用模型）',items:Object.entries(store.list('session',owner).flatMap(s=>s.events).reduce((a,e)=>(a[e.type]=(a[e.type]||0)+1,a),{})).map(([type,count])=>({type,count}))};
         return send(put('job',{id:randomUUID(),job:b.job,at:new Date().toISOString(),output}));
       }
-      if(path==='/api/privacy/delete'&&req.method==='POST'){ensure(b.confirm===true,'请确认删除');store.deleteOwner(owner);return send({deleted:true});}
+      if(path==='/api/privacy/delete'&&req.method==='POST'){ensure(b.confirm===true,'请确认删除');watch.revokeOwner(owner);store.deleteOwner(owner);return send({deleted:true});}
       throw new HttpError(404,'接口不存在');
     }catch(e){send({error:e.status?e.message:'服务暂时不可用，请稍后重试'},e.status||500);if(!e.status)console.error('Request failed:',e.name);}
     finally{if(acquired)locks.delete(lockKey);}
   };
   const app=tls?https.createServer({...tls,minVersion:'TLSv1.2'},handler):http.createServer(handler);
-  app.on('close',()=>store.close());return app;
+  app.on('close',()=>{watch.close();store.close();});return app;
 }
 if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)){
   try{

@@ -1,0 +1,38 @@
+name: ManxingWatch
+options:
+  minimumXcodeGenVersion: 2.42.0
+  deploymentTarget:
+    watchOS: '10.0'
+settings:
+  base:
+    SWIFT_VERSION: '5.0'
+    CODE_SIGN_STYLE: Automatic
+    CURRENT_PROJECT_VERSION: 1
+    MARKETING_VERSION: 0.1.0
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+targets:
+  ManxingWatch:
+    type: application
+    platform: watchOS
+    sources: [ManxingWatch]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.manxing.watch
+        GENERATE_INFOPLIST_FILE: NO
+    info:
+      path: Generated/Info.plist
+      properties:
+        CFBundleDisplayName: 慢行伴行
+        WKApplication: true
+        WKWatchOnly: true
+        WKRunsIndependentlyOfCompanionApp: true
+        WKBackgroundModes: [workout-processing]
+        NSHealthShareUsageDescription: 读取本次漫游的实时心率，经你授权临时转发给旅行网页，用于节奏提示。
+        NSHealthUpdateUsageDescription: 启动本次步行采集会话；结束时丢弃本应用的运动记录，不主动保存运动总结。
+        NSLocalNetworkUsageDescription: 连接你配置的本地慢行服务器，临时转发本次心率。
+    entitlements:
+      path: Generated/ManxingWatch.entitlements
+      properties:
+        com.apple.developer.healthkit: true
+    scheme:
+      gatherCoverageData: false
