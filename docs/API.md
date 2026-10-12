@@ -107,7 +107,7 @@ DeepSeek仍只生成获授权的非健康行程说明，不自动接收低置信
 
 ## 自动识别位置
 
-用户点击“使用当前位置”并授权后，以JSON请求 `POST /api/location/resolve`：
+页面初次打开时自动请求一次浏览器定位权限；允许后，以 JSON 请求 `POST /api/location/resolve`。页面切换不重复请求，用户可点击“重新识别位置”主动重试：
 
 ```json
 {"lat":30.245,"lng":120.158,"accuracy":20,"coordinate_system":"WGS84"}

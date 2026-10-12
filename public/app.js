@@ -5,7 +5,7 @@ const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&
 const fallbackRegions=[['浙江省','杭州市','宁波市'],['北京市','北京市'],['上海市','上海市'],['广东省','广州市','深圳市'],['四川省','成都市'],['重庆市','重庆市'],['江苏省','南京市','苏州市']].map(([name,...cities])=>({name,cities:cities.map(name=>({name,districts:[]}))}));
 const state={page:'plan',planProvince:'浙江省',planCity:'杭州市',planDistrict:'',regions:fallbackRegions,regionsReady:false,regionError:false,trip:null,session:null,suggestion:null,day:1,config:null,pois:[],trips:[],interests:['自然','人文'],sensor:{},location:null,locationMessage:'',locating:false,adminToken:'',offline:false};
 const sensors=new Sensors();
-let toastTimer,renderVersion=0,lastStateAt=0,locationRequest=0;
+let toastTimer,renderVersion=0,lastStateAt=0,locationRequest=0,destinationRevision=0;
 const labels={plan:'规划旅程',trip:'我的行程',journey:'途中伴行',report:'旅行手记',ops:'运营工作台'};
 function toast(message){$('#toast').textContent=message;$('#toast').classList.add('visible');clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('#toast').classList.remove('visible'),5500);}
 async function api(path,data,headers={}){const r=await fetch('/api'+path,{method:data===undefined?'GET':'POST',headers:{...(data!==undefined?{'Content-Type':'application/json'}:{}),...headers},body:data===undefined?undefined:JSON.stringify(data)});const v=await r.json();if(!r.ok)throw Error(v.error||'请求失败');return v;}
@@ -20,12 +20,12 @@ function mapView(stops){
   return routeMapMarkup(state.trip,day);
 }
 function routeLibrary(){const packs=new Map();for(const t of state.trips)if(t.route_pack&&!packs.has(t.route_pack.adcode))packs.set(t.route_pack.adcode,t);return `<section class="card route-library"><div class="card-head"><h2>自动生成的城市路线库</h2>${badge(packs.size+' 个区域')}</div><p class="subtitle">每次规划自动检索并保留城市地点与路线。再次生成会重新检查地点数据和步行路线。</p>${packs.size?`<div class="route-library-grid">${[...packs.values()].map(t=>`<article><h3>${esc(t.preferences.city)}${t.preferences.district?' · '+esc(t.preferences.district):''}</h3><p class="fineprint">${t.route_pack.poi_count} 个候选地点 · ${esc(t.route_pack.generated_at.slice(0,10))}</p><div class="toolbar"><button type="button" class="text-button" data-trip="${esc(t.id)}">查看路线 ↗</button><button type="button" class="text-button" data-city="${esc(t.preferences.city)}" data-district="${esc(t.preferences.district_adcode||'')}">重新规划 →</button></div></article>`).join('')}</div>`:'<p class="fineprint">选择城市或使用自动定位，生成第一份城市路线包。</p>'}</section>`;}
-function locationPanel(planning){return `<div class="location-panel"><div class="location-heading"><strong>⌖ 自动识别当前位置</strong><button type="button" class="secondary" id="${planning?'locate-plan':'locate'}" ${state.locating?'disabled':''}>${state.locating?'正在识别…':'使用当前位置'}</button></div><p class="fineprint">点击即允许将本次位置经后端发送给高德识别城市、区县和附近地点；本项目不保存定位，也不发送给模型。</p><div id="location-result" role="status" aria-live="polite">${locationResult()}</div></div>`;}
+function locationPanel(planning){return `<div class="location-panel"><div class="location-heading"><strong>⌖ 自动识别当前位置</strong><button type="button" class="secondary" id="${planning?'locate-plan':'locate'}" ${state.locating?'disabled':''}>${state.locating?'正在识别…':'重新识别位置'}</button></div><p class="fineprint">打开页面后自动请求定位。浏览器允许后，本次位置经后端发送给高德识别省市区及附近地点；本项目不保存定位，也不发送给模型。可拒绝授权并手动选择。</p><div id="location-result" role="status" aria-live="polite">${locationResult()}</div></div>`;}
 function locationResult(){
   if(state.locationMessage)return `<p class="location-message">${esc(state.locationMessage)}</p>`;
   const l=state.location;if(!l)return '<p class="fineprint">授权后自动识别；也可直接手动规划。</p>';
   const hint=l.dynamic_planning?'已识别城市，生成行程时将自动检索当地景点并编排路线。起点从当地候选地点中选择，当前位置到起点的路程另计。':!l.supported_city?'演示模式仅支持杭州样本；请开启实况服务生成此城市路线。':'已识别位置，可生成杭州演示路线。';
-  return `<p class="location-address"><strong>${esc(l.city)} · ${esc(l.district)}</strong><br>${esc(l.address)}</p>${l.nearby.length?`<p class="fineprint">附近：${l.nearby.map(p=>esc(p.name)).join('、')}</p>`:''}<p class="location-message">${esc(hint)}</p><p class="fineprint">${esc(l.source)} · 定位精度约 ${Math.round(l.accuracy)} m · ${esc(new Date(l.resolved_at).toLocaleTimeString('zh-CN'))}${l.applied?' · 已填入目的地，可手动修改':''}</p>`;
+  return `<p class="location-address"><strong>${esc(l.city)} · ${esc(l.district)}</strong><br>${esc(l.address)}</p>${l.nearby.length?`<p class="fineprint">附近：${l.nearby.map(p=>esc(p.name)).join('、')}</p>`:''}<p class="location-message">${esc(hint)}</p><p class="fineprint">${esc(l.source)} · 定位精度约 ${Math.round(l.accuracy)} m · ${esc(new Date(l.resolved_at).toLocaleTimeString('zh-CN'))}${l.applied?' · 已填入目的地，可手动修改':l.preserved_manual?' · 已保留您手动选择的目的地':''}</p>`;
 }
 function paintLocation(){if($('#location-result'))$('#location-result').innerHTML=locationResult();for(const id of ['#locate-plan','#locate']){const b=$(id);if(b){b.disabled=state.locating;b.textContent=state.locating?'正在识别…':'重新识别位置';}}}
 function clearLocation(){locationRequest++;state.location=null;state.locationMessage='定位已清除。';state.locating=false;paintLocation();}
@@ -33,14 +33,17 @@ async function recognizeLocation(){
   if(state.locating)return;
   const request=++locationRequest;state.locating=true;state.location=null;state.locationMessage='正在获取位置，请允许浏览器定位…';paintLocation();
   // Hold the original form reference so a delayed response cannot change a different page's form.
-  const form=$('#plan-form');
+  const form=$('#plan-form'),revision=destinationRevision;
   try{
     if(!navigator.onLine)throw Error('当前离线，请联网后重试，或手动选择目的地。');
     const position=await sensors.locate();if(request!==locationRequest){sensors.position=null;return;}
     state.locationMessage='正在识别城市与附近地点…';paintLocation();
     const result=await api('/location/resolve',position);if(request!==locationRequest)return;
     state.location=result;state.locationMessage='';
-    if(form&&form.isConnected&&result.supported_city){applyDestination(result.province,result.city,result.adcode,result.district);paintDestination();result.applied=true;}
+    if(form&&form.isConnected&&result.supported_city){
+      if(revision===destinationRevision){applyDestination(result.province,result.city,result.adcode,result.district);paintDestination();result.applied=true;}
+      else result.preserved_manual=true;
+    }
   }catch(e){if(request===locationRequest)state.locationMessage=e.message;}
   finally{if(request===locationRequest){state.locating=false;paintLocation();}}
 }
@@ -105,14 +108,14 @@ async function feedback(trigger,demo=false){if(!state.session||state.session.end
 function updateSensors(){const s=state.sensor;if(!$('#heart-value'))return;$('#heart-value').innerHTML=`${s.hr??'—'}<small>bpm</small>`;$('#cadence-value').innerHTML=`${s.cadence??'—'}<small>步/分</small>`;$('#sensor-status').textContent=s.connected?`已连接 · ${s.calibrating?'静坐采集中…':s.baseline?'参考基线 '+s.baseline+' bpm':'待采集静息参考基线'}`:'未连接设备 · 手动反馈模式';$('#sensor-extra').textContent=`估计步数 ${s.steps||0} · ${s.position?'定位精度约 '+Math.round(s.position.accuracy)+'m，地址识别结果见上方。':'定位未启用。'} 原始心率不上传；步频算法需实测校准。`;const samples=sensors.samples.slice(-50);if(samples.length>1){const min=Math.min(...samples.map(s=>s.value))-3,max=Math.max(...samples.map(s=>s.value))+3;$('#pulse-line').setAttribute('d',samples.map((s,i)=>`${i?'L':'M'}${i/(samples.length-1)*350},${45-(s.value-min)/(max-min)*35}`).join(' '));}}
 sensors.addEventListener('change',e=>{state.sensor=e.detail;updateSensors();if(e.detail.message)toast(e.detail.message);const f=sensors.features();if(state.session&&!state.session.ended_at&&state.session.status!=='paused'&&f.duration_s>=180&&f.cadence_change_pct<=-15&&Date.now()-lastStateAt>300000){lastStateAt=Date.now();feedback('hr_high_sustained').catch(e=>toast(e.message));}});
 $('#app').addEventListener('submit',async e=>{if(e.target.id!=='plan-form')return;e.preventDefault();const data=Object.fromEntries(new FormData(e.target));Object.assign(data,{days:Number(data.days),budget:Number(data.budget),walk_limit_km:Number(data.walk_limit_km),interests:state.interests,model_consent:data.model_consent==='on'});const btn=$('#generate-button');btn.disabled=true;btn.textContent='正在检索城市地点并计算路线…';$('#plan-error').textContent='';try{state.trip=await api('/trip/plan',data);state.trips=(await api('/trips')).trips;state.day=1;state.session=null;state.suggestion=null;sensors.stop();localStorage.removeItem('mx-session');cacheTrip();navigate('trip');}catch(err){$('#plan-error').textContent=err.message;btn.disabled=false;btn.innerHTML='✦ 生成我的专属行程 <span>↗</span>';}});
-$('#app').addEventListener('change',e=>{if(e.target.name==='province'){state.planProvince=e.target.value;state.planCity='';state.planDistrict='';paintDestination();}else if(e.target.name==='city'){state.planCity=e.target.value;state.planDistrict='';paintDestination();}else if(e.target.name==='district_adcode')state.planDistrict=e.target.value;});
+$('#app').addEventListener('change',e=>{if(['province','city','district_adcode'].includes(e.target.name))destinationRevision++;if(e.target.name==='province'){state.planProvince=e.target.value;state.planCity='';state.planDistrict='';paintDestination();}else if(e.target.name==='city'){state.planCity=e.target.value;state.planDistrict='';paintDestination();}else if(e.target.name==='district_adcode')state.planDistrict=e.target.value;});
 $('#app').addEventListener('input',e=>{if(e.target.id==='walk-limit')$('#walk-label').textContent=`${e.target.value} 公里 · ${e.target.value<=4?'轻松漫步':e.target.value<=8?'舒适漫游':'深入探索'}`;});
 document.addEventListener('click',async e=>{
   const b=e.target.closest('button');if(!b)return;
   if(b.dataset.page){navigate(b.dataset.page);return;}
   if(b.classList.contains('modal-close')){closeModal();return;}
   if(b.dataset.interest){const v=b.dataset.interest;state.interests=state.interests.includes(v)?state.interests.filter(x=>x!==v):[...state.interests,v];b.classList.toggle('selected');b.setAttribute('aria-pressed',state.interests.includes(v));return;}
-  if(b.dataset.city){const province=state.regions.find(p=>p.cities.some(c=>c.name===b.dataset.city));state.planProvince=province?.name||state.planProvince;state.planCity=b.dataset.city;state.planDistrict=b.dataset.district||'';navigate('plan');return;}
+  if(b.dataset.city){destinationRevision++;const province=state.regions.find(p=>p.cities.some(c=>c.name===b.dataset.city));state.planProvince=province?.name||state.planProvince;state.planCity=b.dataset.city;state.planDistrict=b.dataset.district||'';navigate('plan');return;}
   if(b.dataset.day){state.day=Number(b.dataset.day);render();return;}
   const id=b.id;b.disabled=true;
   try{
@@ -152,7 +155,9 @@ window.addEventListener('online',()=>{state.offline=false;toast('网络已恢复
 async function init(){
   try{state.config=await api('/config');state.pois=(await api('/pois')).pois;state.trips=(await api('/trips')).trips;const cached=JSON.parse(localStorage.getItem('mx-trip')||'null');state.trip=state.trips.find(t=>t.id===cached?.id)||state.trips[0]||null;if(state.trip)cacheTrip();const sid=localStorage.getItem('mx-session');if(sid){try{state.session=await api('/session/'+sid);if(state.session.trip_id!==state.trip?.id)state.session=null;else if(state.session.pending_suggestion){try{const pending=await api('/suggestion/'+state.session.pending_suggestion);if(!pending.resolved_at&&Date.parse(pending.expires_at)>Date.now())state.suggestion=pending;}catch{}}}catch{localStorage.removeItem('mx-session');}}$('#mode-pill').textContent=state.config.data_mode==='demo'?'演示模式 · 无密钥可体验':'城市动态规划 · 实况';}
   catch{state.offline=true;try{state.trip=JSON.parse(localStorage.getItem('mx-trip')||'null');}catch{}toast('服务连接失败，当前可查看已缓存行程。');}
-  const page=location.hash.slice(1);state.page=labels[page]?page:'plan';await render();await loadRegions();
+  const page=location.hash.slice(1);state.page=labels[page]?page:'plan';await render();
+  // One automatic attempt per page load; rendering/navigation never requests again.
+  await Promise.all([recognizeLocation(),loadRegions()]);
 }
 init();
 window.addEventListener('hashchange',()=>{const page=location.hash.slice(1);if(labels[page]&&page!==state.page)navigate(page);});
