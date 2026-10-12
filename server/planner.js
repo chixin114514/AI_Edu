@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { pois, byId } from './pois.js';
+import { cleanStopReason, defaultStopReason } from '../public/stop-reasons.js';
 import { leg, weather, explain, liveMode, cityRegion, cityPois, regionOptions } from './providers.js';
 export class HttpError extends Error {constructor(status,message){super(message);this.status=status;}}
 export const ensure=(condition,message,status=400)=>{if(!condition)throw new HttpError(status,message);};
@@ -34,7 +35,8 @@ export async function schedule(ids,preferences,date,startAt,origin,catalog){
     const arrival=Math.max(time+transit.duration_min,p.open?minutes(p.open):time);
     const departure=arrival+p.duration_min;
     if(departure>Math.min(p.close?minutes(p.close):1440,minutes(preferences.end_time)-20)||cost+(p.price??0)>preferences.budget/preferences.days||walk+transit.distance_m>preferences.walk_limit_km*1000){skipped.push({id,reason:'超出已知营业、费用、时间或步行约束'});continue;}
-    stops.push({...p,arrival:clock(arrival),departure:clock(departure),leg:transit});
+    const recommendation=cleanStopReason(p.recommendation_reason,p.name);
+    stops.push({...p,arrival:clock(arrival),departure:clock(departure),leg:transit,recommendation_reason:recommendation||defaultStopReason(p,preferences),recommendation_source:recommendation?(p.recommendation_source||'规划规则'):'规划规则'});
     cost+=p.price??0;walk+=transit.distance_m;time=departure+10;prev=p;
   }
   return {stops,skipped,distance_m:walk,cost,unknown_cost_count:stops.filter(p=>p.price===null).length,duration_min:stops.length?minutes(stops.at(-1).departure)-(startAt??minutes(preferences.start_time)):0};
@@ -86,7 +88,7 @@ async function dynamicPlan(prefs){
     days.push({day:i+1,date,...main,plan_b:rain});
   }
   const w=await weather(region),generated=new Date().toISOString();
-  const note=await explain({city:region.name,interests:prefs.interests,days:days.map(d=>({date:d.date,stops:d.stops.map(s=>s.name)})),limitations:'地点来自高德，营业、票价与预约未核实；停留时长为规划估计；天气为实况而非出行日预报'},prefs.model_consent);
+  const note=await annotateStops(days,prefs,catalog,'地点来自高德，营业、票价与预约未核实；停留时长为规划估计；天气为实况而非出行日预报');
   return {id:randomUUID(),version:1,title:region.name+' · 自动漫游路线',preferences:prefs,days,weather:w,created_at:generated,data_mode:'live',poi_catalog:catalog,
     route_pack:{id:randomUUID(),city:region.name,district:prefs.district||null,adcode:prefs.district_adcode||region.adcode,city_adcode:region.adcode,generated_at:generated,poi_count:catalog.length,source:'高德POI自动检索'},
     explanation:note||'按城市检索真实地点，优先串联相近且符合兴趣的节点，用高德步行距离和耗时筛选，并为停留预留缓冲。当前为待核实路线草案。',explanation_source:note?'DeepSeek':'自动规划规则',
@@ -111,8 +113,17 @@ export async function createPlan(input){
     days.push({day:i+1,date,...main,plan_b:rain});
   }
   const w=await weather();
-  const note=await explain({interests:prefs.interests,days:days.map(d=>({date:d.date,stops:d.stops.map(s=>s.name)})),data_mode:liveMode()?'地图实测，POI仍待核验':'全部为演示数据'},prefs.model_consent);
+  const note=await annotateStops(days,prefs,[],'全部为演示数据');
   return {id:randomUUID(),version:1,title:'湖山之间，慢一点也很好',preferences:prefs,days,weather:w,created_at:new Date().toISOString(),data_mode:liveMode()?'mixed':'demo',explanation:note||'沿湖串联自然与人文节点，为每段停留留出缓冲；营业、预算和步行上限参与筛选。演示营业与预约信息需在出发前核实。',explanation_source:note?'DeepSeek':'规则模板',warnings:['POI营业、预约和无障碍信息尚未人工核验，不能作为正式出行保证。','仅支持步行；费用为样本门票与样本餐饮费用，不含住宿、往返交通。','起点前与最后一站后的交通不计入路线。']};
+}
+async function annotateStops(days,prefs,catalog,limitations){
+  const result=await explain({city:prefs.city,interests:prefs.interests,days:days.map(d=>({date:d.date,stops:d.stops.map(({id,name,category,description})=>({id,name,category,description}))})),limitations},prefs.model_consent,{withStops:true});
+  if(!result)return null;
+  const reasons=new Map(result.recommendations.map(p=>[p.id,p.reason]));
+  for(const stop of [...days.flatMap(d=>[...d.stops,...d.plan_b.stops]),...catalog]){
+    if(reasons.has(stop.id)){stop.recommendation_reason=reasons.get(stop.id);stop.recommendation_source='DeepSeek';}
+  }
+  return result.explanation;
 }
 export function evaluate(features={},trigger){
   if(trigger==='unwell')return {status:'paused',action:'seek_help',reason:'您主动报告不适。请停止游览、到安全位置休息，并向身边的人或当地紧急服务寻求帮助。'};

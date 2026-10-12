@@ -18,7 +18,7 @@ test('TypeSafe uses official systemone payload and parses choice distribution',a
   setup(t,async(url,init)=>{assert.equal(String(url),'https://api.typesafe.ai/v1/systemone');assert.equal(init.headers.Authorization,'Bearer unit-jev');assert.equal(init.redirect,'error');const body=JSON.parse(init.body);assert.equal(body.model,'jev-1.13.0');assert.equal(body.questions.travel_state.type,'choice');assert.equal(Object.keys(body.questions.travel_state.criteria).length,3);assert.ok(!('raw_hr'in body.state.features));assert.ok(!('location'in body.state.features));return response(goodJev());});
   const r=await decision({hr_vs_baseline_pct:30,duration_s:190,raw_hr:[100],location:{lat:30}},true);assert.equal(r.status,'rest');assert.equal(r.source,'TypeSafe Jev');assert.equal(providerStatus().jev.status,'ok');
 });
-test('model opt-out prevents both Jev and DeepSeek requests',async t=>{setup(t);assert.equal(await decision({},false),null);assert.equal(await explain({},false),null);});
+test('model opt-out prevents both Jev and DeepSeek requests',async t=>{setup(t);assert.equal(await decision({},false),null);assert.equal(await explain({},false),null);assert.equal(await explain({},false,{withStops:true}),null);});
 test('malformed Jev choices and probability distributions rejected',()=>{
   for(const change of [{choice:'diagnosis'},{confidence:2},{probabilities:{normal:.1,mild_fatigue:.1,rest:.1}},{probabilities:{normal:.8,mild_fatigue:.1,rest:.1}},{type:'score'}]){const d=goodJev();Object.assign(d.answers.travel_state,change);assert.throws(()=>parseJev(d));}
   assert.deepEqual(jevRequest({duration_s:2,raw_hr:[100]}).state.features,{duration_s:2});
@@ -67,4 +67,31 @@ test('Amap rate-limited reads retry with a bound, while authentication errors do
 test('DeepSeek truncated output is rejected even if partial JSON happens to parse',async t=>{
  setup(t,async()=>response({choices:[{finish_reason:'length',message:{content:'{"explanation":"片段"}'}}]}));
  assert.equal(await explain({},true),null);assert.equal(providerStatus().deepseek.error_code,'MODEL_OUTPUT_TRUNCATED');
+});
+test('DeepSeek stop notes use known IDs and strip repeated names, labels and emoji',async t=>{
+ setup(t,async(url,init)=>{
+  const request=JSON.parse(init.body);assert.equal(request.max_tokens,3000);assert.match(request.messages[0].content,/recommendations/);
+  return response({choices:[{message:{content:JSON.stringify({explanation:'按兴趣串联地点。',recommendations:[{id:'a',reason:'🌿 A地点，推荐原因：适合放慢脚步，欣赏沿途景观。'}]})}}]});
+ });
+ const result=await explain({days:[{stops:[{id:'a',name:'A地点'}]}]},true,{withStops:true});
+ assert.equal(result.recommendations[0].reason,'适合放慢脚步，欣赏沿途景观。');
+});
+test('unknown, duplicate and malformed model stop notes are rejected without inventing recommendations',async t=>{
+ setup(t);const context={days:[{stops:[{id:'a',name:'地点A'},{id:'b',name:'地点B'}]}]};
+ for(const recommendations of [null,[{id:'elsewhere',reason:'未知地点'}],[{id:'a',reason:'甲'},{id:'a',reason:'乙'}],[{id:'a',reason:'推荐原因：'}],[{id:'a',reason:123}],[{id:'a',reason:'长'.repeat(301)}]]){
+  globalThis.fetch=async()=>response({choices:[{message:{content:JSON.stringify({explanation:'说明',recommendations})}}]});
+  assert.equal(await explain(context,true,{withStops:true}),null);
+ }
+});
+test('planning persists model notes by stop ID, and missing notes retain honest rule text',async t=>{
+ let chosen;setup(t,async(url,init)=>{
+  assert.equal(url,'https://api.deepseek.com/chat/completions');const context=JSON.parse(JSON.parse(init.body).messages[1].content);chosen=context.days[0].stops[0].id;
+  assert.ok(!JSON.stringify(context).includes('raw_hr'));assert.ok(context.days[0].stops.every(p=>p.id&&p.name&&p.category));
+  return response({choices:[{message:{content:JSON.stringify({explanation:'行程说明。',recommendations:[{id:chosen,reason:'符合你的兴趣，适合在漫游途中停下来看看。'}]})}}]});
+ });process.env.DATA_MODE='demo';const app=createApp({database:':memory:'});t.after(()=>app.emit('close'));
+ const r=await dispatch(app,'/api/trip/plan',{city:'杭州',date:'2026-10-15',days:1,budget:300,walk_limit_km:6,interests:['自然'],start_time:'09:00',end_time:'18:00',companion:'独自',model_consent:true});
+ assert.equal(r.status,201);assert.equal(r.body.days[0].stops[0].id,chosen);assert.equal(r.body.days[0].stops[0].recommendation_source,'DeepSeek');
+ assert.ok(r.body.days[0].stops.slice(1).every(p=>p.recommendation_reason&&p.recommendation_source==='规划规则'));
+ const saved=await dispatch(app,'/api/trip/'+r.body.id,undefined,{cookie:r.headers['set-cookie'].split(';')[0]});
+ assert.equal(saved.body.days[0].stops[0].recommendation_reason,r.body.days[0].stops[0].recommendation_reason);
 });
