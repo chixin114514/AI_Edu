@@ -11,4 +11,6 @@
 - [x] Test and repair the sensor connection lifecycle so cancelled requests cannot clear a newer connection; display understandable network/non-JSON errors. Keep original relay serialization tests.
 - [x] Match optional-device controls and pairing dialog to the mobile layout. Correct Bluetooth/Watch data descriptions, reset stale waveform, and disable baseline collection without a fresh reading.
 - [x] Run `npm run check && npm test`, real-browser 320/390/768/1440px checks, guest planning/journey/Watch relay exercise with synthetic test readings, cancellation and expiry. Clearly distinguish web simulation from physical Watch validation.
-- [ ] Obtain independent review, update validation notes, commit named files, and update PR #1 through the verified Moln-ya connection. Verify remote/local trees and preserve local history.
+- [x] Obtain independent review, update validation notes, commit named files, and update PR #1 through the verified Moln-ya connection. Verify remote/local trees and preserve local history.
+
+Delivered through the Moln-ya connection as an update to [PR #1](https://github.com/chixin114514/AI_Edu/pull/1). Preserved master b205ff7 as a merge parent. Final checks: syntax, 102 automated tests, independent specification/quality reviews and browser relay/layout exercises; real Watch hardware remains unverified.
