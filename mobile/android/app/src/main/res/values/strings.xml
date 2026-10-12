@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">慢行</string>
+    <string name="title_activity_main">慢行</string>
+    <string name="package_name">com.manxing.app</string>
+    <string name="custom_url_scheme">com.manxing.app</string>
+</resources>
