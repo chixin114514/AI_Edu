@@ -24,3 +24,15 @@
 @media(max-width:420px){.destination-grid{gap:6px}.destination-grid select{font-size:11px}}
 
 .map-canvas{touch-action:none;cursor:grab;user-select:none;-webkit-user-select:none}.map-canvas.is-dragging{cursor:grabbing}.map-canvas[aria-busy=true]{cursor:progress}.map-canvas:focus-visible{outline:3px solid #bba851;outline-offset:2px}.map-picture{position:relative;width:100%;height:100%}.map-picture img{-webkit-user-drag:none}.map-message{pointer-events:none}
+
+/* Native date/time controls must not dictate grid track width on mobile. */
+#plan-form .form-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+#plan-form .field{min-width:0}
+#plan-form .field input,#plan-form .field select{max-width:100%;min-inline-size:0;box-sizing:border-box}
+#plan-form input[type=date],#plan-form input[type=time]{display:block;min-height:44px}
+@media(max-width:600px){
+ #plan-form .form-grid{grid-template-columns:minmax(0,1fr)}
+ #plan-form .form-grid>.field>input,#plan-form .form-grid>.field>select{font-size:16px;min-height:44px}
+ #plan-form input::-webkit-date-and-time-value{text-align:left;min-height:1.2em}
+ #plan-form input::-webkit-datetime-edit{min-width:0;padding:0}
+}
