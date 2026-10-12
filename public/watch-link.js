@@ -2,8 +2,9 @@
 export class WatchLink {
   constructor(onState){this.onState=onState;this.revision=0;this.lifecycle=Promise.resolve();}
   async request(path,data){
-    const response=await fetch('/api/watch/'+path,{method:data===undefined?'GET':'POST',headers:data===undefined?{}:{'Content-Type':'application/json'},body:data===undefined?undefined:JSON.stringify(data),cache:'no-store',keepalive:data!==undefined});
-    const result=await response.json();if(!response.ok)throw Error(result.error||'手表连接失败');return result;
+    let response;try{response=await fetch('/api/watch/'+path,{method:data===undefined?'GET':'POST',headers:data===undefined?{}:{'Content-Type':'application/json'},body:data===undefined?undefined:JSON.stringify(data),cache:'no-store',keepalive:data!==undefined});}catch{throw Error('手表连接网络异常，请检查网络后重试。');}
+    let result;try{result=await response.json();}catch{throw Error(`手表服务返回异常（HTTP ${response.status}），请稍后重试。`);}
+    if(!response.ok)throw Error(typeof result?.error==='string'?result.error:`手表连接失败（HTTP ${response.status}）`);return result;
   }
   start(session_id){
     const previous=this.session_id,revision=++this.revision;

@@ -100,3 +100,86 @@ test('Watch readings use real sample times for baseline, ignore duplicate polls,
   assert.equal('bpm' in sensor.features(),false);assert.equal('hr_vs_baseline_pct' in sensor.features(),false);
  }finally{globalThis.document=original;}
 });
+function sensorFixture(t,bluetooth){
+ const originals=Object.fromEntries(['document','window','navigator'].map(name=>[name,Object.getOwnPropertyDescriptor(globalThis,name)]));
+ const page={hidden:false,addEventListener(){}};
+ Object.defineProperty(globalThis,'document',{configurable:true,value:page});
+ Object.defineProperty(globalThis,'window',{configurable:true,value:{isSecureContext:true}});
+ Object.defineProperty(globalThis,'navigator',{configurable:true,value:{bluetooth}});
+ const sensor=new Sensors();sensor.watch.poll=()=>{};
+ t.after(()=>{clearInterval(sensor.timer);clearTimeout(sensor.watch.timer);for(const [name,descriptor] of Object.entries(originals)){if(descriptor)Object.defineProperty(globalThis,name,descriptor);else delete globalThis[name];}});
+ return {sensor,page};
+}
+test('cancelled Watch attempt cannot clear a newer Watch connection',async t=>{
+ const {sensor}=sensorFixture(t);let release;let starts=0;
+ sensor.watch.request=async path=>{if(path==='link'&&++starts===1)await new Promise(resolve=>release=resolve);return {code:'AABBCCDD'};};
+ const first=sensor.connectWatch('s'),failure=assert.rejects(first,/取消/);
+ await new Promise(resolve=>setImmediate(resolve));sensor.disconnect();const second=sensor.connectWatch('s');release();
+ await failure;await second;
+ assert.equal(sensor.source,'watch');assert.equal(sensor.watchStatus,'waiting');
+ sensor.receiveWatch({status:'live',sample:{sequence:1,bpm:77,timestamp:Date.now()}});
+ assert.equal(sensor.hr,77);
+});
+test('cancelled Bluetooth chooser cannot connect after switching to Watch',async t=>{
+ let release,connections=0;
+ const device={addEventListener(){},gatt:{disconnect(){},async connect(){connections++;return {async getPrimaryService(){return {async getCharacteristic(){return {async startNotifications(){},addEventListener(){}};}};}};}}};
+ const {sensor}=sensorFixture(t,{requestDevice:()=>new Promise(resolve=>release=resolve)});
+ sensor.watch.request=async()=>({code:'AABBCCDD'});
+ const old=sensor.connect(),failure=assert.rejects(old,/取消/);
+ await sensor.connectWatch('s');release(device);await failure;
+ assert.equal(connections,0);assert.equal(sensor.source,'watch');assert.equal(sensor.device,null);
+});
+test('background Watch state clears live readings and requires a fresh sample after reset',t=>{
+ const {sensor,page}=sensorFixture(t);const timestamp=Date.now();
+ sensor.source='watch';sensor.receiveWatch({status:'live',sample:{sequence:1,bpm:72,timestamp}});sensor.baseline=70;
+ page.hidden=true;sensor.hidden();
+ assert.equal(sensor.hr,null);assert.equal(sensor.baseline,null);assert.equal(sensor.watchStatus,'background');
+ sensor.receiveWatch({status:'live',sample:{sequence:2,bpm:75,timestamp:timestamp+1}});
+ assert.equal(sensor.watchStatus,'background');assert.equal(sensor.hr,null);
+ page.hidden=false;sensor.receiveWatch({status:'live',sample:{sequence:1,bpm:72,timestamp}});
+ assert.equal(sensor.watchStatus,'waiting_for_sample');assert.equal(sensor.hr,null);assert.throws(()=>sensor.calibrate(),/实时读数/);
+ sensor.receiveWatch({status:'live',sample:{sequence:3,bpm:76,timestamp:Date.now()+5}});
+ assert.equal(sensor.watchStatus,'live');assert.equal(sensor.hr,76);
+});
+test('disconnected Watch state discards the session baseline and ignores late samples',t=>{
+ const {sensor}=sensorFixture(t);sensor.source='watch';sensor.watchStatus='live';sensor.hr=76;sensor.baseline=70;
+ sensor.receiveWatch({status:'disconnected',sample:null});assert.equal(sensor.baseline,null);
+ sensor.disconnect();sensor.receiveWatch({status:'live',sample:{sequence:2,bpm:80,timestamp:Date.now()}});
+ assert.equal(sensor.hr,null);assert.equal(sensor.baseline,null);assert.equal(sensor.watchStatus,null);
+});
+test('Watch request reports readable network errors without exposing transport details',async t=>{
+ t.mock.method(globalThis,'fetch',async()=>{throw new TypeError('fetch failed: private transport details');});
+ await assert.rejects(new WatchLink(()=>{}).request('link',{session_id:'s'}),error=>/网络/.test(error.message)&&!error.message.includes('private'));
+});
+test('Watch request reports invalid service responses without exposing response bodies',async t=>{
+ for(const status of [200,502]){
+  t.mock.method(globalThis,'fetch',async()=>({ok:status===200,status,json:async()=>{throw new SyntaxError('Unexpected token: private HTML payload');}}));
+  await assert.rejects(new WatchLink(()=>{}).request('state?session_id=s'),error=>error.message.includes(String(status))&&/手表.*异常/.test(error.message)&&!error.message.includes('private'));
+ }
+});
+test('expired Watch reading no longer reports a live connection or permits calibration',t=>{
+ let tick,time=2000000000000;t.mock.method(globalThis,'setInterval',callback=>{tick=callback;return 0;});t.mock.method(Date,'now',()=>time);
+ const {sensor}=sensorFixture(t);sensor.source='watch';sensor.receiveWatch({status:'live',sample:{sequence:1,bpm:76,timestamp:time}});
+ time+=20001;tick();
+ assert.equal(sensor.hr,null);assert.equal(sensor.watchStatus,'waiting_for_sample');assert.throws(()=>sensor.calibrate(),/实时读数/);
+});
+test('late Bluetooth GATT completion is disconnected without changing a newer Watch source',async t=>{
+ let release,services=0,disconnects=0;
+ const server={async getPrimaryService(){services++;return {async getCharacteristic(){return {async startNotifications(){},addEventListener(){}};}};}};
+ const device={addEventListener(){},gatt:{disconnect(){disconnects++;},connect:()=>new Promise(resolve=>release=()=>resolve(server))}};
+ const {sensor}=sensorFixture(t,{requestDevice:async()=>device});sensor.watch.request=async()=>({code:'AABBCCDD'});
+ const old=sensor.connect(),failure=assert.rejects(old,/取消/);await new Promise(resolve=>setImmediate(resolve));
+ await sensor.connectWatch('s');const disconnectedBefore=disconnects;release();await failure;
+ assert.equal(services,0);assert.equal(disconnects,disconnectedBefore+1);assert.equal(sensor.source,'watch');assert.equal(sensor.device,null);
+});
+test('Watch disconnection received by an in-flight poll still applies after the page hides',async t=>{
+ const {sensor,page}=sensorFixture(t);let respond;
+ sensor.source='watch';sensor.watchStatus='live';sensor.hr=75;sensor.baseline=70;
+ sensor.watch.session_id='s';sensor.watch.poll=WatchLink.prototype.poll;
+ sensor.watch.request=()=>new Promise(resolve=>respond=resolve);
+ const polling=sensor.watch.poll(sensor.watch.revision);
+ page.hidden=true;sensor.hidden();assert.equal(sensor.watchStatus,'background');
+ respond({status:'disconnected',sample:null});await polling;
+ assert.equal(sensor.watch.session_id,null);assert.equal(sensor.watchStatus,'disconnected');
+ assert.equal(sensor.hr,null);assert.equal(sensor.baseline,null);
+});
