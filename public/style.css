@@ -22,3 +22,5 @@
 
 .destination-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.destination-grid .field{min-width:0}.destination-grid select{padding:11px 7px}.field [hidden]{display:none}
 @media(max-width:420px){.destination-grid{gap:6px}.destination-grid select{font-size:11px}}
+
+.map-canvas{touch-action:none;cursor:grab;user-select:none;-webkit-user-select:none}.map-canvas.is-dragging{cursor:grabbing}.map-canvas[aria-busy=true]{cursor:progress}.map-canvas:focus-visible{outline:3px solid #bba851;outline-offset:2px}.map-picture{position:relative;width:100%;height:100%}.map-picture img{-webkit-user-drag:none}.map-message{pointer-events:none}

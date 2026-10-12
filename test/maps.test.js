@@ -2,7 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {createApp} from '../server/index.js';
 import {dispatch} from './harness.js';
-import {mapViewport,mapPixel,project,unproject,routePaths} from '../public/map-geometry.js';
+import {mapViewport,mapPixel,project,unproject,routePaths,panMapCenter,validPoint} from '../public/map-geometry.js';
 const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=','base64');
 const input={city:'杭州',date:'2026-10-15',days:2,budget:300,walk_limit_km:6,interests:['自然'],start_time:'09:00',end_time:'18:00',companion:'独自',model_consent:false};
 async function fixture(t){
@@ -22,6 +22,24 @@ test('viewport fits stops and actual path bounds; GCJ-02 coordinates are not con
 test('missing and demo geometry never becomes a straight route between stops',()=>{
  const stops=[{lng:120,lat:30,leg:{mode:'demo',polyline:[[120,30],[121,31]]}},{lng:121,lat:31,leg:{mode:'live',polyline:[]}},{lng:122,lat:32,leg:{mode:'live',polyline:[[121,31],[NaN,31],[122,32]]}}];
  assert.deepEqual(routePaths(stops),[[[121,31],[122,32]]]);
+});
+test('drag preserves map and route alignment at different zoom levels and stays within supported coordinates',()=>{
+ for(const zoom of [3,14,17]){
+  const view={center:[120.15,30.25],zoom,width:640,height:480},point=[120.16,30.26];
+  const before=mapPixel(point,view),center=panMapCenter(view,80,-40),after=mapPixel(point,{...view,center});
+  assert.ok(Math.abs(after[0]-before[0]-80)<1e-6);assert.ok(Math.abs(after[1]-before[1]+40)<1e-6);
+  assert.ok(center[0]<view.center[0]);assert.ok(center[1]<view.center[1]);
+  assert.ok(validPoint(panMapCenter(view,1e10,-1e10)));
+ }
+});
+test('custom map center reaches provider and remains owner scoped; malformed or conflicting centers are rejected',async t=>{
+ const {app,cookie,url}=await fixture(t);let calls=0;
+ globalThis.fetch=async url=>{calls++;const u=new URL(url);assert.equal(u.searchParams.get('location'),'120.12,30.27');assert.equal(u.searchParams.get('zoom'),'15');return new Response(png,{headers:{'content-type':'image/png'}});};
+ for(const q of ['lng=120','lat=30','lng=&lat=30','lng=120&lat=NaN','lng=181&lat=30','lng=120&lat=86','lng=120&lat=30&focus=0'])assert.equal((await dispatch(app,url+'?'+q,undefined,{cookie})).status,400,q);
+ assert.equal(calls,0);
+ assert.equal((await dispatch(app,url+'?lng=120.12&lat=30.27&zoom=15')).status,404);
+ const r=await dispatch(app,url+'?lng=120.12&lat=30.27&zoom=15',undefined,{cookie});
+ assert.equal(r.status,200);assert.deepEqual(r.body.view.center,[120.12,30.27]);assert.equal(calls,1);
 });
 test('map endpoint protects ownership, validates view, and never exposes provider key',async t=>{
  const {app,cookie,url}=await fixture(t);let calls=0;

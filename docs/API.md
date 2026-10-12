@@ -133,7 +133,7 @@ DeepSeek仍只生成获授权的非健康行程说明，不自动接收低置信
 
 ### 行程地图
 
-`GET /api/trip/{id}/map?day=1&zoom=14&focus=0`：限当前浏览器拥有的行程；默认 `day=1`，省略 `zoom` / `focus` 时自动显示全程。返回 `{image, view: {center, zoom, width, height}, source}`，image 为后端取得的高德底图 data URL。参数错误 400、非本人行程 404、超过每分钟 60 次 429、底图不可用 503。
+`GET /api/trip/{id}/map?day=1&zoom=14&focus=0`：限当前浏览器拥有的行程；默认 `day=1`，省略 `zoom` / `focus` 时自动显示全程。平移可传 `lng` 和 `lat`（GCJ-02，经度 ±180、纬度 ±85，必须成对且不能与 `focus` 同时使用）。返回 `{image, view: {center, zoom, width, height}, source}`，image 为后端取得的高德底图 data URL。参数错误 400、非本人行程 404、超过每分钟 60 次 429、底图不可用 503。
 
 ### 城市下拉选项
 

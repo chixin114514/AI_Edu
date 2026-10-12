@@ -85,10 +85,17 @@ export function createApp({database=process.env.DATABASE_PATH||'./data/manxing.s
         ensure(Number.isInteger(day)&&day>=1&&day<=trip.days.length,'旅行日无效');
         const stops=trip.days[day-1].stops;
         ensure(zoom===undefined||(Number.isInteger(zoom)&&zoom>=3&&zoom<=17),'地图缩放级别无效');
+        let center;
+        if(q.has('lng')||q.has('lat')){
+          ensure(q.has('lng')&&q.has('lat')&&q.get('lng').trim()!==''&&q.get('lat').trim()!=='','地图中心坐标不完整');
+          center=[Number(q.get('lng')),Number(q.get('lat'))];
+          ensure(center.every(Number.isFinite)&&Math.abs(center[0])<=180&&Math.abs(center[1])<=85,'地图中心坐标无效');
+          ensure(focus===undefined,'地图中心与地点聚焦不能同时指定');
+        }
         ensure(focus===undefined||(Number.isInteger(focus)&&focus>=0&&focus<stops.length),'地点无效');
         const id='map:'+owner,now=Date.now();let limit=limits.get(id);if(!limit||now-limit.at>60000)limit={at:now,count:0};
         ensure(++limit.count<=60,'地图操作过于频繁，请稍后重试',429);limits.set(id,limit);
-        let image;try{image=await routeMap(stops,{zoom,focus});}catch{throw new HttpError(503,'地图暂时无法加载，请稍后重试');}
+        let image;try{image=await routeMap(stops,{zoom,focus,center});}catch{throw new HttpError(503,'地图暂时无法加载，请稍后重试');}
         return send(image);
       }
       if(/^\/api\/trip\/[^/]+$/.test(path)&&req.method==='GET')return send(get('trip',path.split('/')[3]));
