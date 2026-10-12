@@ -92,6 +92,13 @@ export function createStore() {
       }
       return out;
     },
+    delete(kind, id, owner) {
+      const key = recKey(kind, id);
+      const record = read(key);
+      if (!record) return;
+      if (owner && record.owner !== owner) return;
+      localStorage.removeItem(key);
+    },
     deleteOwner(owner) {
       const doomed = [];
       for (let i = 0; i < localStorage.length; i++) {

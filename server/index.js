@@ -10,14 +10,17 @@ import { createAuth } from './auth.js';
 import { createWatchRelay } from './watch-relay.js';
 import { routeMap } from './maps.js';
 import { pois, byId } from './pois.js';
-import { createPlan, evaluate, ensure, HttpError, clock, minutes, schedule, approximateDistance, readPoint } from './planner.js';
-import { decision, liveMode, providerFlags, providerStatus, probeProvider, resolveLocation, cityOptions, cityRegion, regionOptions, qweatherMinutely, qweatherAlerts, transitRoutes, searchPlaces, openTopoElevations } from './providers.js';
+import { createPlan, evaluate, ensure, HttpError, clock, minutes, schedule, approximateDistance, readPoint, rebuildDay } from './planner.js';
+import { decision, liveMode, providerFlags, providerStatus, probeProvider, resolveLocation, cityOptions, cityRegion, regionOptions, qweatherMinutely, qweatherAlerts, transitRoutes, searchPlaces, openTopoElevations, poeticSummary } from './providers.js';
 import { gcj02ToWgs84, routePoints, buildElevationProfile } from './elevation.js';
+import { JOURNAL_LIMITS, parsePhotoDataUrl, photoUrl, cleanJournalText, entryKey } from './journal.js';
 const root=fileURLToPath(new URL('../public/',import.meta.url));
 const mime={'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8','.svg':'image/svg+xml','.json':'application/json','.png':'image/png'};
-async function body(req){
+// 默认上限 32KB；只有日记照片那条路会放宽（照片已由前端压缩，最大 2MB）。
+const PHOTO_BODY_BYTES=3*1024*1024;
+async function body(req,maxBytes=32768){
   ensure((req.headers['content-type']||'').startsWith('application/json'),'仅接受JSON请求',415);
-  let s='';for await(const c of req){s+=c;ensure(Buffer.byteLength(s)<=32768,'请求过大',413);}
+  let s='';for await(const c of req){s+=c;ensure(Buffer.byteLength(s)<=maxBytes,'请求过大',413);}
   try{const b=JSON.parse(s);ensure(b&&typeof b==='object'&&!Array.isArray(b),'请求须为对象');return b;}catch(e){if(e instanceof HttpError)throw e;throw new HttpError(400,'JSON格式错误');}
 }
 export function createApp({database=process.env.DATABASE_PATH||'./data/manxing.sqlite',tls}={}){
@@ -63,7 +66,7 @@ export function createApp({database=process.env.DATABASE_PATH||'./data/manxing.s
         ensure(++l.count<=120,'请求过于频繁，请稍后重试',429);limits.set(ip,l);
         if(limits.size>10000)limits.clear();
       }
-      const b=req.method==='POST'?await body(req):{};
+      const b=req.method==='POST'?await body(req,path==='/api/journal/photo'?PHOTO_BODY_BYTES:undefined):{};
       const user=auth.current(cookies),owner=user?'user:'+user.id:guest;
       if(path==='/api/auth/me'&&req.method==='GET')return send({user});
       if(['/api/auth/register','/api/auth/login'].includes(path)&&req.method==='POST'){
@@ -187,6 +190,20 @@ export function createApp({database=process.env.DATABASE_PATH||'./data/manxing.s
         let trip;try{trip=await createPlan(b);}catch(e){if(e instanceof HttpError)throw e;throw new HttpError(503,'地图服务不可用，未生成未经验证的实况路线；请检查配置或使用演示模式。');}
         return send(put('trip',trip),201);
       }
+      if(/^\/api\/trip\/[^/]+\/stops$/.test(path)&&req.method==='POST'){
+        const trip=get('trip',path.split('/')[3]),day=Number(b.day);
+        ensure(Number.isInteger(day)&&day>=1&&day<=trip.days.length,'旅行日无效');
+        // 漫游进行中不能改线：会话里的 current_index 指向具体节点，重排会让它失去意义。
+        ensure(!store.list('session',owner).some(s=>s.trip_id===trip.id&&!s.ended_at),'请先结束当前漫游，再调整行程顺序',409);
+        let rebuilt;
+        try{rebuilt=await rebuildDay(trip,day-1,b.stops);}
+        catch(e){if(e instanceof HttpError)throw e;throw new HttpError(503,'地图服务不可用，没有重算这段路线，行程保持不变');}
+        trip.days[day-1]=rebuilt.day;
+        // 版本号变化会让尚未确认的改线建议自动过期（confirm 时会比对 trip_version）。
+        trip.version++;
+        put('trip',trip);
+        return send({trip,warnings:rebuilt.warnings});
+      }
       if(/^\/api\/trip\/[^/]+\/map$/.test(path)&&req.method==='GET'){
         const trip=get('trip',path.split('/')[3]),q=new URL(req.url,'http://local').searchParams;
         const day=Number(q.get('day')||1),zoom=q.has('zoom')?Number(q.get('zoom')):undefined,focus=q.has('focus')?Number(q.get('focus')):undefined;
@@ -271,9 +288,84 @@ export function createApp({database=process.env.DATABASE_PATH||'./data/manxing.s
         s.current_index=Math.min(s.current_index+1,trip.days[s.day-1].stops.length);s.pending_suggestion=null;put('session',s);return send(s);
       }
       if(path==='/api/session/end'&&req.method==='POST'){const s=get('session',b.session_id);watch.revoke(owner,s.id);s.ended_at??=new Date().toISOString();s.pending_suggestion=null;put('session',s);return send(s);}
+      // 漫游日记：一个地点一条，键是 行程:天:站点，文字与照片都挂在这条记录上。
+      const journalStop=()=>{
+        const trip=get('trip',typeof b.trip_id==='string'?b.trip_id:undefined),day=Number(b.day);
+        ensure(Number.isInteger(day)&&day>=1&&day<=trip.days.length,'旅行日无效');
+        const stop=trip.days[day-1].stops.find(s=>typeof s.id==='string'&&s.id===b.stop_id);
+        ensure(stop,'这个地点不在当天的行程里');
+        return {trip,day,stop};
+      };
+      // journal.js 抛的是普通 Error（它不依赖 HttpError），在这里统一转成 400。
+      const asBadRequest=fn=>{try{return fn();}catch(e){if(e instanceof HttpError)throw e;throw new HttpError(400,e.message);}};
+      // 手记页要直接展示日记与照片，所以日记随报告一起返回，避免再发一轮请求。
+      const listJournal=tripId=>store.list('journal',owner).filter(entry=>entry.trip_id===tripId)
+        .sort((a,b)=>a.day-b.day||String(a.created_at).localeCompare(String(b.created_at)))
+        .map(entry=>({id:entry.id,day:entry.day,stop_id:entry.stop_id,stop_name:entry.stop_name,text:entry.text,created_at:entry.created_at,updated_at:entry.updated_at,
+          photos:(entry.photo_ids||[]).map(id=>store.get('photo',id,owner)).filter(Boolean).map(photo=>({id:photo.id,mime:photo.mime,size:photo.size,url:photoUrl(photo)}))}));
+      if(path==='/api/journal'&&req.method==='POST'){
+        const {trip,day,stop}=journalStop();
+        const text=asBadRequest(()=>cleanJournalText(b.text));
+        const key=entryKey(trip.id,day,stop.id),existing=store.get('journal',key,owner);
+        // 文字被清空且没有照片时整条日记删掉，不留空记录。
+        if(!text&&!(existing?.photo_ids||[]).length){
+          if(existing)store.delete('journal',key,owner);
+          return send({entry:null,deleted:true});
+        }
+        const now=new Date().toISOString();
+        const entry={id:key,trip_id:trip.id,day,stop_id:stop.id,stop_name:stop.name,text,photo_ids:existing?.photo_ids||[],created_at:existing?.created_at||now,updated_at:now};
+        return send({entry:put('journal',entry)},existing?200:201);
+      }
+      if(path==='/api/journal/photo'&&req.method==='POST'){
+        const {trip,day,stop}=journalStop();
+        const parsed=asBadRequest(()=>parsePhotoDataUrl(b.data));
+        const key=entryKey(trip.id,day,stop.id),existing=store.get('journal',key,owner);
+        const photo_ids=existing?.photo_ids||[];
+        ensure(photo_ids.length<JOURNAL_LIMITS.photosMaxPerEntry,`每个地点最多 ${JOURNAL_LIMITS.photosMaxPerEntry} 张照片`);
+        const photo={id:randomUUID(),trip_id:trip.id,day,stop_id:stop.id,stop_name:stop.name,mime:parsed.mime,size:parsed.size,data:parsed.base64,created_at:new Date().toISOString()};
+        put('photo',photo);
+        const now=new Date().toISOString();
+        const entry={id:key,trip_id:trip.id,day,stop_id:stop.id,stop_name:stop.name,text:existing?.text||'',photo_ids:[...photo_ids,photo.id],created_at:existing?.created_at||now,updated_at:now};
+        put('journal',entry);
+        return send({entry,photo:{id:photo.id,mime:photo.mime,size:photo.size,url:photoUrl(photo)}},201);
+      }
+      if(path==='/api/journal/photo/delete'&&req.method==='POST'){
+        const photo=get('photo',typeof b.photo_id==='string'?b.photo_id:undefined);
+        store.delete('photo',photo.id,owner);
+        const entry=store.get('journal',entryKey(photo.trip_id,photo.day,photo.stop_id),owner);
+        if(entry){
+          entry.photo_ids=entry.photo_ids.filter(id=>id!==photo.id);entry.updated_at=new Date().toISOString();
+          if(!entry.text&&!entry.photo_ids.length)store.delete('journal',entry.id,owner);else put('journal',entry);
+        }
+        return send({deleted:true,entry:entry&&(entry.text||entry.photo_ids.length)?entry:null});
+      }
+      if(/^\/api\/trip\/[^/]+\/journal$/.test(path)&&req.method==='GET'){
+        const trip=get('trip',path.split('/')[3]);
+        return send({trip_id:trip.id,entries:listJournal(trip.id),limits:JOURNAL_LIMITS});
+      }
       if(/^\/api\/trip\/[^/]+\/report$/.test(path)&&req.method==='GET'){
         const trip=get('trip',path.split('/')[3]),sessions=store.list('session',owner).filter(s=>s.trip_id===trip.id),events=sessions.flatMap(s=>s.events),suggestions=store.list('suggestion',owner).filter(s=>s.trip_id===trip.id);
-        return send({trip_id:trip.id,title:trip.title,finished:sessions.length>0&&sessions.every(s=>s.ended_at),total_stops:trip.days.reduce((n,d)=>n+d.stops.length,0),visited_stops:new Set(events.filter(e=>e.type==='checkin').map(e=>e.stop_id)).size,walked_km:sessions.reduce((n,s)=>n+s.walked_km,0),planned_distance_km:trip.days.reduce((n,d)=>n+d.distance_m,0)/1000,accepted:suggestions.filter(s=>s.accepted===true).length,rejected:suggestions.filter(s=>s.accepted===false).length,events,preference_note:suggestions.some(s=>s.accepted)?'下次可以优先尝试更轻松的节奏；请在生成行程时确认。':'继续记录您的选择，逐步认识适合您的旅行节奏。',data_mode:trip.data_mode});
+        return send({trip_id:trip.id,title:trip.title,finished:sessions.length>0&&sessions.every(s=>s.ended_at),total_stops:trip.days.reduce((n,d)=>n+d.stops.length,0),visited_stops:new Set(events.filter(e=>e.type==='checkin').map(e=>e.stop_id)).size,walked_km:sessions.reduce((n,s)=>n+s.walked_km,0),planned_distance_km:trip.days.reduce((n,d)=>n+d.distance_m,0)/1000,accepted:suggestions.filter(s=>s.accepted===true).length,rejected:suggestions.filter(s=>s.accepted===false).length,events,preference_note:suggestions.some(s=>s.accepted)?'下次可以优先尝试更轻松的节奏；请在生成行程时确认。':'继续记录您的选择，逐步认识适合您的旅行节奏。',data_mode:trip.data_mode,summary:trip.summary||null,journal:listJournal(trip.id)});
+      }
+      if(/^\/api\/trip\/[^/]+\/summary$/.test(path)&&req.method==='POST'){
+        const trip=get('trip',path.split('/')[3]);
+        // 沿用规划时的说明授权：总结是行程内容，不是健康内容，所以不需要二次授权。
+        ensure(trip.preferences?.model_consent===true,'生成总结需要你在规划行程时开启模型授权');
+        ensure(providerFlags().deepseek,'未配置 DeepSeek，暂时无法生成总结',503);
+        const sessions=store.list('session',owner).filter(s=>s.trip_id===trip.id),events=sessions.flatMap(s=>s.events),suggestions=store.list('suggestion',owner).filter(s=>s.trip_id===trip.id);
+        // 只给行程事实：不发坐标、不发身份、不发任何健康特征（连步数推算的里程也不发）。
+        const context={city:trip.preferences.city,district:trip.preferences.district||null,date:trip.preferences.date,days:trip.preferences.days,
+          companion:trip.preferences.companion,interests:trip.preferences.interests,weather:trip.weather?.condition??null,
+          planned_days:trip.days.map(day=>({date:day.date,places:day.stops.map(stop=>({name:stop.name,category:stop.category}))})),
+          checked_in:new Set(events.filter(e=>e.type==='checkin').map(e=>e.stop_id)).size,
+          total_stops:trip.days.reduce((n,day)=>n+day.stops.length,0),
+          accepted:suggestions.filter(s=>s.accepted===true).length,declined:suggestions.filter(s=>s.accepted===false).length,
+          finished:sessions.length>0&&sessions.every(s=>s.ended_at)};
+        const text=await poeticSummary(context,true);
+        ensure(text,'总结暂时没能生成，请稍后再试',503);
+        trip.summary={text,generated_at:new Date().toISOString(),source:`DeepSeek ${process.env.DEEPSEEK_MODEL||'deepseek-flash'}`};
+        put('trip',trip);
+        return send({summary:trip.summary});
       }
       if(path==='/api/ops'&&req.method==='GET')return send({providers:providerFlags(),provider_status:providerStatus()});
       if(path==='/api/ops/test'&&req.method==='POST'){

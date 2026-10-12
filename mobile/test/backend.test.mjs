@@ -95,9 +95,42 @@ test('运营接口在设备端同样可用', async () => {
   // 运营工作台已加管理员校验：设备端也要先以 admin 登录（首次启动会播种该账号）。
   const { user } = await call('POST', '/api/auth/login', { username: 'admin', password: 'admin' });
   assert.equal(user.role, 'admin');
+  // /api/ops 现在只返回服务配置与最近调用状态（POI 审查与反馈聚类已移除）。
   const ops = await call('GET', '/api/ops');
-  assert.equal(ops.poi_count, 32);
-  assert.ok(ops.providers);
+  assert.equal(typeof ops.providers, 'object');
+  assert.equal(typeof ops.providers.maps, 'boolean');
+  assert.ok(ops.provider_status.maps);
+  assert.ok(!Object.hasOwn(ops, 'jobs'));
+});
+
+test('设备端也能按新顺序重排当天行程', async () => {
+  const trip = await call('POST', '/api/trip/plan', INPUT);
+  const stops = trip.days[0].stops;
+  const reversed = [...stops].reverse().map(stop => ({ id: stop.id }));
+  const edited = await call('POST', `/api/trip/${trip.id}/stops`, { day: 1, stops: reversed });
+  assert.equal(edited.trip.version, trip.version + 1);
+  assert.deepEqual(edited.trip.days[0].stops.map(stop => stop.id), reversed.map(stop => stop.id));
+  assert.ok(Array.isArray(edited.warnings));
+});
+
+test('设备端日记：照片用 atob 校验文件头，记录能加能删', async () => {
+  const trip = await call('POST', '/api/trip/plan', INPUT);
+  const stop = trip.days[0].stops[0];
+  const target = { trip_id: trip.id, day: 1, stop_id: stop.id };
+  const written = await call('POST', '/api/journal', { ...target, text: '在这里坐了一会儿。' });
+  assert.equal(written.entry.text, '在这里坐了一会儿。');
+  // 这条路径同时验证了 shims 的 store.delete 与「不用 Buffer 解 base64」的取舍。
+  const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8AAAwAB/AF+8v0lAAAAAElFTkSuQmCC';
+  const uploaded = await call('POST', '/api/journal/photo', { ...target, data: PNG });
+  assert.equal(uploaded.photo.mime, 'image/png');
+  assert.match(uploaded.photo.url, /^data:image\/png;base64,/);
+  let entries = (await call('GET', `/api/trip/${trip.id}/journal`)).entries;
+  assert.equal(entries[0].photos.length, 1);
+  await call('POST', '/api/journal/photo/delete', { photo_id: uploaded.photo.id });
+  entries = (await call('GET', `/api/trip/${trip.id}/journal`)).entries;
+  assert.equal(entries[0].photos.length, 0);
+  assert.equal(entries[0].text, '在这里坐了一会儿。', '删照片不该把文字一起删掉');
+  await assert.rejects(() => call('POST', '/api/journal/photo', { ...target, data: 'data:image/png;base64,aGVsbG8=' }), /不一致/);
 });
 
 test('删除本人数据会清空设备存储中的行程', async () => {

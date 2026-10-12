@@ -18,6 +18,7 @@ export function createStore(path) {
     get(kind,id,owner){const r=db.prepare('SELECT value,owner FROM records WHERE kind=? AND id=?').get(kind,id);return r&&(!owner||r.owner===owner)?JSON.parse(r.value):null;},
     put(kind,value,owner){db.prepare('INSERT INTO records VALUES (?,?,?,?) ON CONFLICT(kind,id) DO UPDATE SET value=excluded.value').run(kind,value.id,owner,JSON.stringify(value));return value;},
     list(kind,owner){return (owner?db.prepare('SELECT value FROM records WHERE kind=? AND owner=?').all(kind,owner):db.prepare('SELECT value FROM records WHERE kind=?').all(kind)).map(r=>JSON.parse(r.value));},
+    delete(kind,id,owner){db.prepare('DELETE FROM records WHERE kind=? AND id=? AND owner=?').run(kind,id,owner);},
     deleteOwner(owner){db.prepare('DELETE FROM records WHERE owner=?').run(owner);},
     close(){db.close();}
   };
