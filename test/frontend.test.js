@@ -468,20 +468,30 @@ test('移出与加入当天行程都会提交完整的新顺序',async()=>{
   assert.deepEqual(Object.keys(posted[1].stops[2]),['id']);
 });
 
-test('拖拽松手后按新顺序提交，顺序没变则不提交',async()=>{
-  const posted=[];
-  const b=editBrowser({handler:async(url,options)=>{
-    if(url==='/api/trip/trip-edit/stops'){posted.push(JSON.parse(options.body));return {ok:true,json:async()=>({trip:{...editTrip,version:2},warnings:['调整后总步行约 8.0 km，超过每日上限 6 km。']})};}
-    return null;
-  }});
+test('模型授权直接显示在规划表单里，不再收进折叠栏',async()=>{
+  const b=toolsBrowser();
+  await b.run("(async()=>{state.page='plan';await render();})()");
+  const html=b.node('#app').innerHTML;
+  assert.match(html,/name="model_consent"/);
+  assert.match(html,/允许将兴趣和行程节点发送给 DeepSeek/);
+  // 折叠栏里只留定位；授权勾选框必须在表单里直接可见。
+  const details=html.match(/<details class="optional-settings">[\s\S]*?<\/details>/)?.[0]||'';
+  assert.ok(details,'定位仍然是可选的折叠栏');
+  assert.match(details,/自动识别当前位置/);
+  assert.doesNotMatch(details,/model_consent/,'模型授权不能藏在折叠栏里');
+  // 仍然不落盘：勾选后重新加载不该变成默认勾选。
+  b.handlers.get('#app:input')({target:{name:'model_consent',type:'checkbox',checked:true}});
+  assert.equal(b.run('state.planConsent'),true);
+  assert.doesNotMatch(b.stored.get('mx-plan-draft')||'',/model_consent/);
+});
+
+test('景点列表不再提供拖动把手',async()=>{
+  const b=editBrowser();
   await b.run("(async()=>{state.page='trip';await render();})()");
-  // 指针几何依赖真实布局，DOM 桩里没有；这里只验证松手后的提交逻辑。
-  await b.run("dragState={list:{querySelectorAll:()=>['p2','p3','p1'].map(id=>({dataset:{stop:id}}))},dragging:{classList:{remove(){}}},before:['p1','p2','p3'],rects:new Map()};endStopDrag()");
-  assert.equal(posted.length,1);
-  assert.deepEqual(posted[0].stops.map(stop=>stop.id),['p2','p3','p1']);
-  assert.match(b.node('#toast').textContent,/超过每日上限/,'服务端的警告要如实转达');
-  await b.run("dragState={list:{querySelectorAll:()=>['p1','p2','p3'].map(id=>({dataset:{stop:id}}))},dragging:{classList:{remove(){}}},before:['p1','p2','p3'],rects:new Map()};endStopDrag()");
-  assert.equal(posted.length,1,'顺序没变就不该发请求');
+  const html=b.node('#app').innerHTML;
+  assert.doesNotMatch(html,/drag-handle/);
+  assert.doesNotMatch(html,/data-drag/);
+  assert.match(html,/data-stop-remove="p1"/,'移出仍然保留');
 });
 
 test('伴行页心率步频常驻显示，写日记时文字落到接口',async()=>{

@@ -523,14 +523,13 @@ dialog>.modal-close { position:absolute; right:8px; top:6px; width:44px; border:
 .elevation-chart path { vector-effect:non-scaling-stroke; }
 @media(max-width:480px) { .transit-legs li { flex-wrap:wrap; } .transit-legs li small { flex-basis:100%; margin-left:52px; text-align:left; } }
 
-/* 风景清单：标题行 + 拖动把手 + 行内操作 */
-.stop-head { display:flex; align-items:flex-start; justify-content:space-between; gap:10px; }
+/* 风景清单：逐站说明 + 行内操作 */
 .stop-actions { display:flex; align-items:center; gap:14px; flex-wrap:wrap; margin-top:12px; }
 .stop-actions .source-link,.stop-actions .text-button { font-size:12px; padding:4px 0; min-height:auto; }
-.drag-handle { flex:0 0 auto; border:1px solid var(--line); background:var(--paper); color:#87957c; border-radius:7px; padding:6px 9px; font-size:12px; line-height:1; cursor:grab; touch-action:none; }
-.drag-handle:active { cursor:grabbing; background:var(--light); }
-.route-stop.dragging { opacity:.65; background:var(--light); border-radius:10px; }
-.route-stop.dragging .drag-handle { background:var(--green); border-color:var(--green); color:#f3f6e5; }
+
+/* 规划页：模型授权放在表单里直接可见，不再收进折叠栏 */
+.model-consent { background:var(--light); border:1px solid #dce3ce; border-radius:10px; padding:14px 15px; margin:18px 0 16px; color:#4d5f50; }
+.model-consent strong { font-weight:600; color:var(--ink); }
 
 /* 漫游日记 */
 .journal-text { font-size:13px; line-height:1.95; color:#4d5f50; white-space:pre-wrap; overflow-wrap:anywhere; }

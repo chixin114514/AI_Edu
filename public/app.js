@@ -8,7 +8,7 @@ const draft=readDraft();
 const state={page:'plan',draft,planPending:false,planError:'',planConsent:false,planProvince:draft.province,planCity:draft.city,planDistrict:draft.district_adcode,regions:fallbackRegions,regionsReady:false,regionError:false,trip:null,session:null,suggestion:null,day:1,config:null,pois:[],trips:[],interests:draft.interests,sensor:{},watchPairing:null,watchPending:false,location:null,locationMessage:'',locating:false,user:null,authMode:'login',authChecked:false,offline:false,planStartPoint:null,planEndPoint:null,picker:null,providerTests:{},providerTesting:null,transit:{from:null,to:null,result:null,error:'',loading:false},elevation:{loading:false,data:null,error:''},stopDetail:null,journal:{},journalTrip:null,journalDraft:null,summaryLoading:false,summaryError:''};
 applyDestination(draft.province,draft.city,draft.district_adcode,draft.district);
 const sensors=new Sensors();
-let toastTimer,renderVersion=0,lastStateAt=0,locationRequest=0,destinationRevision=0,accountRevision=0,watchAttempt=0,dragState=null;
+let toastTimer,renderVersion=0,lastStateAt=0,locationRequest=0,destinationRevision=0,accountRevision=0,watchAttempt=0;
 const labels={plan:'规划旅程',trip:'我的行程',journey:'途中伴行',report:'旅行手记',ops:'运营工作台',auth:'登录与注册'};
 function toast(message){$('#toast').textContent=message;$('#toast').classList.add('visible');clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('#toast').classList.remove('visible'),5500);}
 // Only planning preferences are persisted; permissions and sensor readings are never draft data.
@@ -184,10 +184,11 @@ function planPage(){
       <label class="field"><span class="range-label">每日步行上限 <strong id="walk-label">${esc(d.walk_limit_km)} 公里</strong></span><input name="walk_limit_km" id="walk-limit" type="range" min="1" max="15" step="1" value="${esc(d.walk_limit_km)}"><span class="range-label"><small>轻松一点</small><small>多探索一点</small></span></label>
       <p class="fineprint">步行路线 · 起点自动选择。未知票价与预约费用需出发前核实。</p>
     </div></details>
+    <label class="check-row model-consent"><input name="model_consent" type="checkbox" ${state.planConsent?'checked':''}><span><strong>允许将兴趣和行程节点发送给 DeepSeek</strong>，用来生成地点说明与结束后的收尾文字。不包含身份、定位和心率；不勾选也能规划。</span></label>
     <button class="primary generate" type="submit" id="generate-button" ${state.planPending?'disabled':''}><span>${state.planPending?'正在为你编排行程…':'生成我的行程'}</span><span aria-hidden="true">${state.planPending?'◌':'↗'}</span></button>
     <div id="plan-error" class="error-inline" role="alert">${esc(state.planError)}</div>
     <p class="plan-status" role="status">${state.planPending?'正在检索地点与步行路线，可能需要数十秒。可以切换页面，完成后会提醒你。':'先规划，再出发。走累了，随时点「轻松一点」。'}</p>
-    <details class="optional-settings"><summary>定位与 AI 说明 <span>可选</span></summary><div class="preferences-body">${locationPanel(true)}<label class="check-row"><input name="model_consent" type="checkbox" ${state.planConsent?'checked':''}><span>允许将兴趣和行程节点发送至 DeepSeek 生成说明。不包含身份、定位和心率；不开启也能规划。</span></label></div></details>
+    <details class="optional-settings"><summary>定位 <span>可选</span></summary><div class="preferences-body">${locationPanel(true)}</div></details>
     <p class="data-note">${state.config?.data_mode==='live'?'实况地点与步行路线 · 营业、预约和费用待核实':'当前为杭州演示体验 · 示例路线不可用于实际导航'}</p>
   </form></section>
   <aside class="plan-story"><div class="story-art"><img src="/lake.svg" alt="湖岸与山景插画"><span class="art-caption">慢一点，看见更多。<small>城市漫游概念插画</small></span></div><div class="story-copy"><span class="eyebrow">A JOURNEY THAT LISTENS</span><h2>计划有方向，<br>旅程有余地。</h2><p>天气变了，或只是想休息一下。<br>慢行给出新建议，你决定怎么走。</p><div class="story-promise"><span>01 选一座城</span><span>02 生成路线</span><span>03 随感受调整</span></div></div></aside></div>
@@ -214,10 +215,10 @@ function timeline(day){const lockedNames=new Set(mustVisitList().map(m=>m.name))
  const reason=cleanStopReason(p.recommendation_reason,p.name)||defaultStopReason(p,state.trip?.preferences);
  const link=`https://uri.amap.com/marker?position=${p.lng},${p.lat}&name=${encodeURIComponent(p.name)}&coordinate=gaode&callnative=0`;
  const previous=index?day.stops[index-1]:state.trip?.preferences?.start_point;
- return `<article class="route-stop" data-stop="${esc(p.id)}"><div class="stop-body"><div class="stop-head"><h3 class="stop-title">${esc(p.name)}</h3><button type="button" class="drag-handle" data-drag="${esc(p.id)}" aria-label="按住拖动调整顺序" title="按住拖动调整顺序">⣿</button></div>${commerceInfo(p,{compact:true})}<p class="stop-description">${esc(reason)}</p><div class="stop-actions"><a class="source-link" href="${esc(link)}" target="_blank" rel="noopener noreferrer">查看高德地点</a>${previous?`<a class="source-link" href="${esc(amapNavigation(previous,p))}" target="_blank" rel="noopener noreferrer">导航</a>`:''}<button type="button" class="text-button" data-stop-detail="${esc(p.id)}">详情</button><button type="button" class="text-button" data-must="${esc(p.id)}">${lockedNames.has(p.name)?'✓ 已锁定为必去':'锁定为必去'}</button>${p.category==='终点'?'':`<button type="button" class="text-button" data-stop-remove="${esc(p.id)}">移出</button>`}</div></div></article>`;
+ return `<article class="route-stop"><div class="stop-body"><h3 class="stop-title">${esc(p.name)}</h3>${commerceInfo(p,{compact:true})}<p class="stop-description">${esc(reason)}</p><div class="stop-actions"><a class="source-link" href="${esc(link)}" target="_blank" rel="noopener noreferrer">查看高德地点</a>${previous?`<a class="source-link" href="${esc(amapNavigation(previous,p))}" target="_blank" rel="noopener noreferrer">导航</a>`:''}<button type="button" class="text-button" data-stop-detail="${esc(p.id)}">详情</button><button type="button" class="text-button" data-must="${esc(p.id)}">${lockedNames.has(p.name)?'✓ 已锁定为必去':'锁定为必去'}</button>${p.category==='终点'?'':`<button type="button" class="text-button" data-stop-remove="${esc(p.id)}">移出</button>`}</div></div></article>`;
 }).join('')}</div>`;}
 
-// ---------------- 景点详情、增删与拖拽排序 ----------------
+// ---------------- 景点详情与增删 ----------------
 // 高德 URI 导航。官方文档写明「途径点只在驾车模式下有效」，所以步行无法把整天串成
 // 一条带途经点的导航，只能一站一段地给链接。坐标本身已是 GCJ-02，不需要 coordinate 参数。
 function amapNavigation(from,to){
@@ -298,43 +299,6 @@ async function loadStopElevation(stop){
   if($('#modal').open)repaintStopDetail();
 }
 function repaintStopDetail(){if(state.stopDetail&&$('#modal').open)$('#modal-content').innerHTML=stopDetailMarkup();}
-
-// 拖拽排序。用指针事件而不是 HTML5 拖放：HTML5 的 drag 事件在触屏上不生效，
-// 而这个项目是手机优先的。拖动过程中直接挪动 DOM（不重渲染，否则指针会失去目标），
-// 松手后一次性提交，服务端重算每段的步行时间。
-function beginStopDrag(event,id){
-  const list=$('.timeline[data-day]');if(!list)return;
-  const dragging=[...list.querySelectorAll('[data-stop]')].find(item=>item.dataset.stop===id);
-  if(!dragging)return;
-  const items=[...list.querySelectorAll('[data-stop]')];
-  const rects=new Map(items.map(item=>[item,item.getBoundingClientRect()]));
-  dragState={list,dragging,rects,before:items.map(item=>item.dataset.stop)};
-  dragging.classList.add('dragging');
-  window.addEventListener('pointermove',moveStopDrag);
-  window.addEventListener('pointerup',endStopDrag,{once:true});
-  window.addEventListener('pointercancel',endStopDrag,{once:true});
-  event.preventDefault();
-}
-function moveStopDrag(event){
-  if(!dragState)return;
-  const {list,dragging,rects}=dragState;
-  for(const item of list.querySelectorAll('[data-stop]')){
-    if(item===dragging)continue;
-    const rect=rects.get(item);if(!rect)continue;
-    const middle=rect.top+rect.height/2,after=dragging.compareDocumentPosition(item)&Node.DOCUMENT_POSITION_FOLLOWING;
-    if(event.clientY<middle&&after)list.insertBefore(dragging,item);
-    else if(event.clientY>middle&&!after)list.insertBefore(dragging,item.nextSibling);
-  }
-}
-async function endStopDrag(){
-  window.removeEventListener('pointermove',moveStopDrag);
-  const drag=dragState;dragState=null;
-  if(!drag)return;
-  drag.dragging.classList.remove('dragging');
-  const order=[...drag.list.querySelectorAll('[data-stop]')].map(item=>item.dataset.stop);
-  if(order.join()===drag.before.join())return;
-  await saveStops(order.map(id=>stopPayload(findStop(id))));
-}
 
 // ---------------- 漫游日记（文字 + 照片） ----------------
 const JOURNAL_TEXT_MAX=1200,JOURNAL_PHOTOS_MAX=6;
@@ -827,11 +791,6 @@ document.addEventListener('click',async e=>{
     if(id==='delete-data')modal('<h2>确认删除本浏览器的数据？</h2><p>将删除所有行程、会话、建议、日记与照片，以及本地缓存。删除后不能恢复。</p><div class="modal-actions"><button class="danger" id="confirm-delete">确认删除</button><button class="secondary modal-close">取消</button></div>');
     if(id==='confirm-delete'){await api('/privacy/delete',{confirm:true});clearLocation();sensors.stop();state.trip=null;state.session=null;state.suggestion=null;state.trips=[];localStorage.removeItem('mx-trip');localStorage.removeItem('mx-session');localStorage.removeItem('mx-plan-draft');state.draft=readDraft();applyDestination(state.draft.province,state.draft.city,state.draft.district_adcode,state.draft.district);state.interests=state.draft.interests;state.planConsent=false;closeModal();navigate('plan');toast('本浏览器的记录已删除');}
   }catch(err){toast(err.message);}finally{b.disabled=false;if(id==='calibrate')updateSensors();}
-});
-// 拖拽排序用指针事件（触屏也生效），所以监听的是 pointerdown 而不是 click。
-document.addEventListener('pointerdown',e=>{
-  const handle=e.target.closest?.('[data-drag]');
-  if(handle)beginStopDrag(e,handle.dataset.drag);
 });
 window.addEventListener('offline',()=>{state.offline=true;toast('网络已断开，缓存行程仍可查看。');});
 window.addEventListener('online',()=>{state.offline=false;toast('网络已恢复');render();});
