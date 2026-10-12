@@ -5,6 +5,16 @@ node_modules/
 data/*.sqlite*
 data/*.db*
 artifacts/
+# 桌面端（Electron）：打包产物与本地构建
+desktop/release/
+# 移动端（Capacitor）：构建产物、本地环境与内置密钥配置
+mobile/www/
+mobile/default-env.json
+mobile/android/.gradle/
+mobile/android/build/
+mobile/android/app/build/
+mobile/android/local.properties
+mobile/android/app/src/main/assets/public/
 *.log
 .DS_Store
 Thumbs.db

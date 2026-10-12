@@ -1,0 +1,24 @@
+{
+  "name": "manxing-mobile",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "慢行 MANXING 移动端：把后端整个搬进 App，无需服务器",
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node build.mjs && node test/backend.test.mjs && node test/native.test.mjs && node test/live-mode.test.mjs",
+    "serve": "python3 -m http.server 4173 --directory www",
+    "apk": "node build.mjs && npx cap sync android && npm run clean:android && cd android && ANDROID_HOME=${ANDROID_HOME:-/opt/homebrew/share/android-commandlinetools} ./gradlew assembleDebug",
+    "clean:android": "find android/app/src -name '* *' -delete; rm -rf android/app/build android/build"
+  },
+  "devDependencies": {
+    "@capacitor/android": "^8.5.3",
+    "@capacitor/cli": "^8.5.3",
+    "@capacitor/core": "^8.5.3",
+    "esbuild": "^0.28.2"
+  },
+  "dependencies": {
+    "@capacitor-community/bluetooth-le": "^8.3.0",
+    "@capacitor/geolocation": "^8.2.3"
+  }
+}

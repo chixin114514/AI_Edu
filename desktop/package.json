@@ -1,0 +1,69 @@
+{
+  "name": "manxing-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "慢行 MANXING 桌面端：Electron 外壳，内置启动 server/index.js",
+  "author": "慢行 MANXING",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "smoke": "MANXING_SMOKE=1 electron .",
+    "dist": "electron-builder --mac dmg --publish never",
+    "dist:dir": "electron-builder --mac dir --publish never"
+  },
+  "build": {
+    "appId": "com.manxing.desktop",
+    "productName": "慢行",
+    "artifactName": "ManXing-${version}-${arch}.${ext}",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "afterPack": "build/after-pack.js",
+    "files": [
+      "main.js",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../server",
+        "to": "server"
+      },
+      {
+        "from": "../public",
+        "to": "public"
+      }
+    ],
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
+      "category": "public.app-category.travel",
+      "identity": null
+    },
+    "dmg": {
+      "title": "慢行 ${version}",
+      "contents": [
+        {
+          "x": 150,
+          "y": 190
+        },
+        {
+          "x": 420,
+          "y": 190,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
+    }
+  },
+  "devDependencies": {
+    "electron": "^44.7.0",
+    "electron-builder": "^26.15.3"
+  }
+}
