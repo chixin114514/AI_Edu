@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "qweather": {
+      "command": "node",
+      "args": [
+        "/root/AIEdu/scripts/mcp-server.js",
+        "qweather"
+      ]
+    },
+    "amap-maps": {
+      "command": "node",
+      "args": [
+        "/root/AIEdu/scripts/mcp-server.js",
+        "amap-maps"
+      ]
+    }
+  }
+}
