@@ -84,7 +84,6 @@ footer span:last-child { display:none; }
 .text-button { border:0; background:none; padding:10px 0; font-size:12px; color:var(--green); text-align:left; }
 .check-row { display:flex; align-items:flex-start; gap:10px; min-height:44px; color:var(--muted); font-size:12px; line-height:1.8; }
 .check-row input { accent-color:var(--green); margin:4px 0 0; width:18px; height:18px; flex-shrink:0; }
-.separator { height:1px; background:var(--line); margin:24px 0; }
 summary { cursor:pointer; min-height:44px; padding:12px 0; }
 details { font-size:12px; color:#67765c; }
 .badge { display:inline-block; background:var(--light); color:#5b714a; font-size:10px; padding:4px 8px; border-radius:4px; line-height:1.5; font-weight:400; }
@@ -193,14 +192,6 @@ details[open]>summary .expand-mark { transform:rotate(45deg); }
 .inline-list li { display:flex; justify-content:space-between; align-items:start; gap:15px; padding:15px 0; border-bottom:1px solid var(--line); color:#6d7a61; font-size:12px; line-height:1.8; }
 .inline-list li:last-child { border:0; }
 .inline-list small { white-space:nowrap; }
-.table-wrap { overflow:auto; max-width:100%; }
-table { width:100%; border-collapse:collapse; font-size:12px; }
-td,th { padding:14px 10px; text-align:left; border-bottom:1px solid var(--line); white-space:nowrap; }
-th { color:var(--muted); font-size:11px; font-weight:500; }
-td { color:#63725b; }
-.job { border-top:1px solid var(--line); padding-top:18px; margin-top:18px; }
-.job p { color:var(--muted); font-size:12px; }
-.job li { line-height:1.8; }
 /* Journey: current stop and a clear choice before optional sensors. */
 .current-stop { background:var(--green); color:#f9f9ec; border-radius:16px; padding:25px 23px; }
 .current-meta { display:flex; justify-content:space-between; gap:14px; font-size:10px; color:#d3dfbc; margin-bottom:24px; }

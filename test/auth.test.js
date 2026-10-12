@@ -19,13 +19,13 @@ test('registration creates only a regular user, normalizes name, validates crede
  assert.equal((await browser.request('/auth/register',credentials)).status,409);
  assert.equal((await browser.request('/auth/register',{username:'ADMIN',password:'new-password'})).status,409);
 });
-test('only authenticated admin can read or run operations; old bearer tokens and role fields cannot bypass',async t=>{
+test('only authenticated admin can read operations; old bearer tokens and role fields cannot bypass',async t=>{
  const {app,browser}=fixture(t);
  assert.equal((await browser.request('/ops')).status,401);
  assert.equal((await browser.request('/ops/run',{job:'poi_audit'},{authorization:'Bearer anything'})).status,401);
  await browser.request('/auth/register',credentials);assert.equal((await browser.request('/ops')).status,403);assert.equal((await browser.request('/ops/run',{job:'feedback',role:'admin'})).status,403);
  const admin=client(app);assert.equal((await admin.request('/auth/login',{username:'admin',password:'admin'})).body.user.role,'admin');
- assert.equal((await admin.request('/ops')).status,200);assert.equal((await admin.request('/ops/run',{job:'poi_audit'})).status,200);
+ assert.equal((await admin.request('/ops')).status,200);assert.equal((await admin.request('/ops/run',{job:'poi_audit'})).status,404);
 });
 test('guest trips migrate to account, persist across devices, and stay private after logout and another login',async t=>{
  const {app,browser}=fixture(t);const trip=(await browser.request('/trip/plan',plan)).body;const oldGuest=browser.cookie;

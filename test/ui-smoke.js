@@ -21,7 +21,7 @@ test('frontend renders every view with real backend responses and completes sugg
   await run("(async()=>{state.page='trip';await render();})()");assert.match(node('#app').innerHTML,/今日的风景清单/);
   await run("(async()=>{state.session=await api('/session/start',{trip_id:state.trip.id,day:1,model_consent:false});state.page='journey';await render();await feedback('tired');})()");assert.match(node('#app').innerHTML,/接受调整/);
   await run("(async()=>{const r=await api('/session/confirm',{session_id:state.session.id,suggestion_id:state.suggestion.id,accept:true});state.trip=r.trip;state.suggestion=null;state.page='report';await render();})()");assert.match(node('#app').innerHTML,/接受路线调整/);
-  await run("(async()=>{state.user=(await api('/auth/login',{username:'admin',password:'admin'})).user;state.page='ops';await render();})()");assert.match(node('#app').innerHTML,/地点数据清单/);
+  await run("(async()=>{state.user=(await api('/auth/login',{username:'admin',password:'admin'})).user;state.page='ops';await render();})()");assert.match(node('#app').innerHTML,/服务连接状态/);assert.doesNotMatch(node('#app').innerHTML,/运营任务|地点数据清单|地点样本|待人工核验|反馈聚类|任务记录/);
   assert.equal(run("esc('<script>')"),'&lt;script&gt;');
   const list=run(`timeline({stops:[{name:'地点A',category:'美食',lng:120,lat:30,per_capita_cost:58,rating:null,recommendation_reason:'推荐原因：<script>仅作文本</script>'},{name:'地点B',category:'自然',lng:120,lat:30,per_capita_cost:null,rating:4.6}]})`);
   for(const removed of ['计划停留','推荐原因','暂无','↗','stop-meta','stop-time','<script>'])assert.ok(!list.includes(removed),removed);

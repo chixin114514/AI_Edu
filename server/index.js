@@ -275,12 +275,7 @@ export function createApp({database=process.env.DATABASE_PATH||'./data/manxing.s
         const trip=get('trip',path.split('/')[3]),sessions=store.list('session',owner).filter(s=>s.trip_id===trip.id),events=sessions.flatMap(s=>s.events),suggestions=store.list('suggestion',owner).filter(s=>s.trip_id===trip.id);
         return send({trip_id:trip.id,title:trip.title,finished:sessions.length>0&&sessions.every(s=>s.ended_at),total_stops:trip.days.reduce((n,d)=>n+d.stops.length,0),visited_stops:new Set(events.filter(e=>e.type==='checkin').map(e=>e.stop_id)).size,walked_km:sessions.reduce((n,s)=>n+s.walked_km,0),planned_distance_km:trip.days.reduce((n,d)=>n+d.distance_m,0)/1000,accepted:suggestions.filter(s=>s.accepted===true).length,rejected:suggestions.filter(s=>s.accepted===false).length,events,preference_note:suggestions.some(s=>s.accepted)?'下次可以优先尝试更轻松的节奏；请在生成行程时确认。':'继续记录您的选择，逐步认识适合您的旅行节奏。',data_mode:trip.data_mode});
       }
-      if(path==='/api/ops'&&req.method==='GET')return send({poi_count:pois.length,unverified:pois.filter(p=>!p.verified).length,my_feedback:store.list('session',owner).flatMap(s=>s.events).reduce((a,e)=>(a[e.type]=(a[e.type]||0)+1,a),{}),jobs:store.list('job',owner).reverse().slice(0,10),providers:providerFlags(),provider_status:providerStatus()});
-      if(path==='/api/ops/run'&&req.method==='POST'){
-        ensure(['poi_audit','feedback'].includes(b.job),'任务类型无效');
-        const output=b.job==='poi_audit'?{summary:'已完成样本字段完整性检查。未抓取官方页面；以下记录仍需人工核验。',items:pois.map(p=>({name:p.name,result:!p.verified?'待核验':'已核验',source:p.source_url,missing:['name','source_url','updated_at','open','close'].filter(k=>!p[k])}))}:{summary:'当前浏览器反馈的规则聚类（未调用模型）',items:Object.entries(store.list('session',owner).flatMap(s=>s.events).reduce((a,e)=>(a[e.type]=(a[e.type]||0)+1,a),{})).map(([type,count])=>({type,count}))};
-        return send(put('job',{id:randomUUID(),job:b.job,at:new Date().toISOString(),output}));
-      }
+      if(path==='/api/ops'&&req.method==='GET')return send({providers:providerFlags(),provider_status:providerStatus()});
       if(path==='/api/privacy/delete'&&req.method==='POST'){ensure(b.confirm===true,'请确认删除');watch.revokeOwner(owner);store.deleteOwner(owner);return send({deleted:true});}
       throw new HttpError(404,'接口不存在');
     }catch(e){send({error:e.status?e.message:'服务暂时不可用，请稍后重试'},e.status||500);if(!e.status)console.error('Request failed:',e.name);}
