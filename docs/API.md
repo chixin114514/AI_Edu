@@ -169,3 +169,20 @@ DeepSeek仍只生成获授权的非健康行程说明，不自动接收低置信
 输出限定已给定地点 ID，未知／重复 ID、空说明或截断响应不作为有效模型结果。缺失条目和服务失败使用类别／兴趣规则说明，不标为 DeepSeek；有效结果随行程持久化，并同步到对应 POI，便于后续改线沿用。
 
 “今日的风景清单”展示地点名、已知参考人均／评分、说明正文及纯文本“查看高德地点”链接；不展示未知指标占位、停留／营业／预约／来源小字、步行小字或装饰符号。原始事实、时间与路段字段仍保留在接口和导出数据中。旧行程缺少新字段时，页面使用规则说明，不额外调用模型。
+
+## Apple Watch 临时转发
+
+此通道独立于蓝牙与模型授权：网页和手表都需明确同意原始心率经 HTTPS 临时转发。服务端只在内存保留最新一条、20秒失效，不写数据库、不写日志、不直接发送到模型。单进程部署；应用重启后需重新配对。
+
+| 接口 | 方法与授权 | 输入/输出 |
+| --- | --- | --- |
+| `/api/watch/link` | POST，当前行程所有者 Cookie | `{session_id,relay_consent:true}`；返回8位一次性 `code`、毫秒时间戳 `pair_expires_at`（5分钟）和 `expires_at`（4小时） |
+| `/api/watch/pair` | POST，一次性配对码 | `{code}`；返回 `token`、`expires_at` 和建议发送间隔 `sample_interval_s:5`；每IP每5分钟最多10次 |
+| `/api/watch/sample` | POST，`Authorization: Bearer <token>` | `{bpm:75,timestamp:1791800000000,sequence:1}`；timestamp 为实际采样 Unix 毫秒，25–240 bpm，最多20秒前/5秒未来，序号和采样时间严格递增，发送间隔至少2秒 |
+| `/api/watch/state?session_id=…` | GET，当前行程所有者 Cookie | `{status,sample,expires_at?}`；sample为最新 `{bpm,timestamp,sequence}` 或 null；状态 waiting / waiting_for_sample / live / disconnected |
+| `/api/watch/unlink` | POST，当前行程所有者 Cookie | `{session_id}`；立即撤销 |
+| `/api/watch/disconnect` | POST，设备 Bearer token | `{}`；手表停止时撤销 |
+
+除本机 loopback 测试外必须使用 TLS；不信任任意转发头。设备 token 无行程读取权限。结束、暂停行程、退出登录、账号切换、删除数据、替换配对时撤销。读接口 `Cache-Control: no-store`，服务工作线程不缓存 API。旧/乱序样本返回409，失效token返回401，超限429。
+
+手表工程与 Mac 安装方法见 [Apple Watch 接入](../apple/README.md)。网页登录恢复不会自动恢复心率采集，需要重新配对。

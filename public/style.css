@@ -480,3 +480,5 @@ dialog>.modal-close { position:absolute; right:8px; top:6px; width:44px; border:
 @media(prefers-reduced-motion:reduce) {
   *,*::before,*::after { transition:none!important; animation:none!important; scroll-behavior:auto!important; }
 }
+
+.watch-code{font-size:32px;font-weight:700;letter-spacing:.14em;text-align:center;font-variant-numeric:tabular-nums;padding:16px;background:#f1f5ea;border-radius:12px}.watch-server{overflow-wrap:anywhere;user-select:all}
