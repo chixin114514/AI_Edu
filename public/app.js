@@ -3,6 +3,23 @@ import { routeMapMarkup, mountRouteMaps, destroyRouteMaps } from './route-map.js
 import { Sensors } from './sensors.js';
 const $=s=>document.querySelector(s),$$=s=>[...document.querySelectorAll(s)];
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+// 行内 SVG 图标：统一描边风格，颜色跟随文字。
+const ICONS={
+  pin:'<path d="M12 21s-7-6.2-7-11a7 7 0 0 1 14 0c0 4.8-7 11-7 11z"/><circle cx="12" cy="10" r="2.5"/>',
+  arrow:'<path d="M5 12h14m-5-5 5 5-5 5"/>',
+  plus:'<path d="M12 5v14M5 12h14"/>',
+  check:'<path d="m5 12.5 4.5 4.5L19 7.5"/>',
+  close:'<path d="M6 6l12 12M18 6 6 18"/>',
+  download:'<path d="M12 4v11m-4-4 4 4 4-4M5 20h14"/>',
+  nav:'<path d="M12 3 5 20l7-4 7 4z"/>',
+  star:'<path d="m12 3.5 2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8L3.5 9.7l5.9-.9z"/>',
+  edit:'<path d="M4 20h4L19 9l-4-4L4 16zM13 7l4 4"/>',
+  search:'<circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5"/>'
+};
+const icon=name=>`<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name]||''}</svg>`;
+const CATEGORY_TONE={自然:'nature',人文:'culture',建筑:'arch',展览:'expo',美食:'food',休息:'rest',终点:'end'};
+const INTEREST_EMOJI={自然:'🌿',人文:'🏛️',建筑:'🏙️',展览:'🖼️',美食:'🍜'};
+const tag=category=>category?`<span class="tag tone-${CATEGORY_TONE[category]||'rest'}">${esc(category)}</span>`:'';
 const fallbackRegions=[['浙江省','杭州市','宁波市'],['北京市','北京市'],['上海市','上海市'],['广东省','广州市','深圳市'],['四川省','成都市'],['重庆市','重庆市'],['江苏省','南京市','苏州市']].map(([name,...cities])=>({name,cities:cities.map(name=>({name,districts:[]}))}));
 const draft=readDraft();
 const state={page:'plan',draft,planPending:false,planError:'',planConsent:false,planProvince:draft.province,planCity:draft.city,planDistrict:draft.district_adcode,regions:fallbackRegions,regionsReady:false,regionError:false,trip:null,session:null,suggestion:null,day:1,config:null,pois:[],trips:[],interests:draft.interests,sensor:{},watchPairing:null,watchPending:false,location:null,locationMessage:'',locating:false,user:null,authMode:'login',authChecked:false,offline:false,planStartPoint:null,planEndPoint:null,picker:null,providerTests:{},providerTesting:null,transit:{from:null,to:null,result:null,error:'',loading:false},elevation:{loading:false,data:null,error:''},stopDetail:null,journal:{},journalTrip:null,journalDraft:null,summaryLoading:false,summaryError:''};
@@ -10,7 +27,7 @@ applyDestination(draft.province,draft.city,draft.district_adcode,draft.district)
 const sensors=new Sensors();
 let toastTimer,renderVersion=0,lastStateAt=0,locationRequest=0,destinationRevision=0,accountRevision=0,watchAttempt=0;
 const labels={plan:'规划旅程',trip:'我的行程',journey:'途中伴行',report:'旅行手记',ops:'运营工作台',auth:'登录与注册'};
-function toast(message){$('#toast').textContent=message;$('#toast').classList.add('visible');clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('#toast').classList.remove('visible'),5500);}
+function toast(message){$('#toast').textContent=message;$('#toast').classList.add('visible');clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('#toast').classList.remove('visible'),4000);}
 // Only planning preferences are persisted; permissions and sensor readings are never draft data.
 function readDraft(){
   const defaults={province:'浙江省',city:'杭州市',district_adcode:'',district:'',date:new Date().toLocaleDateString('en-CA'),days:'1',budget:'300',companion:'独自',start_time:'09:00',end_time:'18:00',walk_limit_km:'6',interests:['自然','人文']};
@@ -37,7 +54,7 @@ async function api(path,data,headers={}){
   const revision=accountRevision;
   let response;
   try{response=await fetch('/api'+path,{method:data===undefined?'GET':'POST',headers:{...(data!==undefined?{'Content-Type':'application/json'}:{}),...headers},body:data===undefined?undefined:JSON.stringify(data)});}
-  catch{throw Error('网络连接失败，请检查网络后重试。你的输入仍然保留。');}
+  catch{throw Error('网络连接失败，请检查网络后重试。');}
   let value;
   try{value=await response.json();}catch{throw Error('服务暂时不可用，请稍后重试。');}
   if(revision!==accountRevision&&!path.startsWith('/auth/'))throw Error('账号已切换，请重新操作');
@@ -60,11 +77,12 @@ $('#modal').addEventListener('change',e=>{
   if(e.target.id!=='journal-file')return;
   handleJournalFiles(e.target.files||[]).catch(()=>{});
 });
-function heading(k,title,subtitle,actions=''){return `<div class="page-heading"><div><p class="eyebrow">${k}</p><h1>${title}</h1><p class="subtitle">${subtitle}</p></div>${actions||`<div class="date-note">城市路线 · 按需生成</div>`}</div>`;}
+function heading(title,subtitle='',actions=''){return `<div class="page-head"><div><h1>${title}</h1>${subtitle?`<p class="page-sub">${subtitle}</p>`:''}</div>${actions?`<div class="head-actions">${actions}</div>`:''}</div>`;}
 const badge=(text,warm=false)=>`<span class="badge ${warm?'warm':''}">${esc(text)}</span>`;
+function paintMode(){const pill=$('#mode-pill');if(!state.config)return;const demo=state.config.data_mode==='demo';pill.textContent=demo?'演示数据':'实时数据';pill.dataset.mode=demo?'demo':'live';pill.hidden=false;}
 function updateAccountUI(){
   for(const node of $$('[data-page="ops"],.nav-divider'))node.hidden=state.user?.role!=='admin';
-  $('#account-button').textContent=state.user?state.user.username:'登录 / 注册';
+  $('#account-button').textContent=state.user?state.user.username:'登录';
   $('#account-button').title=state.user?.role==='admin'?'管理员账号':'我的账号';
   $('#logout-button').hidden=!state.user;
 }
@@ -79,9 +97,9 @@ async function switchAccount(user){
   catch{state.offline=true;toast('账号已切换，行程暂时无法加载，请联网后刷新。');}
 }
 function authPage(){
-  if(state.user)return `<section class="card account-card"><p class="eyebrow">YOUR MANXING ACCOUNT</p><h1>你好，${esc(state.user.username)}</h1><p class="subtitle">${state.user.role==='admin'?'管理员 · 可使用运营工作台':'旅行者 · 行程已关联到你的账号'}</p><div class="toolbar"><button class="primary" data-page="plan">继续规划旅程 →</button>${state.user.role==='admin'?'<button class="secondary" data-page="ops">进入运营工作台</button>':''}</div></section>`;
+  if(state.user)return `<section class="card account-card"><div class="avatar" aria-hidden="true">${esc(String(state.user.username||'').slice(0,1).toUpperCase())}</div><h1>你好，${esc(state.user.username)}</h1><p class="page-sub">${state.user.role==='admin'?'管理员账号':'行程已保存在这个账号里'}</p><div class="toolbar"><button class="primary" data-page="plan">去规划 ${icon('arrow')}</button>${state.user.role==='admin'?'<button class="secondary" data-page="ops">运营工作台</button>':''}</div></section>`;
   const register=state.authMode==='register';
-  return `<section class="auth-layout"><div class="auth-intro"><p class="eyebrow">AT YOUR OWN PACE</p><h1>好风景，<br>从这一程开始。</h1><p>保存每一次漫游，<br>在不同设备继续你的旅程。</p><img src="/lake.svg" alt="湖岸山水插画"></div><div class="card auth-card"><div class="auth-tabs" aria-label="选择登录或注册"><button type="button" data-auth-mode="login" aria-pressed="${!register}">登录</button><button type="button" data-auth-mode="register" aria-pressed="${register}">注册</button></div><h2>${register?'创建你的慢行账号':'欢迎回到慢行'}</h2><p class="subtitle">${register?'已有游客行程会一并保存在新账号中。':'登录后，继续查看你的行程与旅行手记。'}</p><form id="auth-form"><label class="field">用户名<input name="username" autocomplete="username" autocapitalize="none" spellcheck="false" minlength="3" maxlength="32" pattern="[A-Za-z0-9_]{3,32}" placeholder="英文字母、数字或下划线" required></label><label class="field">密码<input name="password" type="password" autocomplete="${register?'new-password':'current-password'}" minlength="${register?8:1}" maxlength="128" placeholder="${register?'至少8位字符':'请输入密码'}" required></label>${register?'<label class="field">确认密码<input name="confirm_password" type="password" autocomplete="new-password" minlength="8" maxlength="128" placeholder="再次输入密码" required></label>':''}<p id="auth-error" class="error-inline" role="alert"></p><button type="submit" class="primary wide" id="auth-submit">${register?'注册并登录':'登录'} →</button></form><button type="button" class="text-button auth-guest" data-page="plan">先以游客身份规划旅程</button></div></section>`;
+  return `<section class="auth-layout"><div class="auth-art"><img src="/lake.svg" alt=""><p>登录后，行程和手记<br>换台设备也能接着看。</p></div><div class="card auth-card"><div class="segmented auth-tabs" aria-label="选择登录或注册"><button type="button" data-auth-mode="login" aria-pressed="${!register}">登录</button><button type="button" data-auth-mode="register" aria-pressed="${register}">注册</button></div><h1>${register?'创建账号':'欢迎回来'}</h1>${register?'<p class="page-sub">现在的游客行程会一起存进新账号。</p>':''}<form id="auth-form"><label class="field"><span class="field-label">用户名</span><input name="username" autocomplete="username" autocapitalize="none" spellcheck="false" minlength="3" maxlength="32" pattern="[A-Za-z0-9_]{3,32}" placeholder="字母、数字或下划线" required></label><label class="field"><span class="field-label">密码</span><input name="password" type="password" autocomplete="${register?'new-password':'current-password'}" minlength="${register?8:1}" maxlength="128" placeholder="${register?'至少 8 位':'请输入密码'}" required></label>${register?'<label class="field"><span class="field-label">再输一次密码</span><input name="confirm_password" type="password" autocomplete="new-password" minlength="8" maxlength="128" placeholder="再输一次" required></label>':''}<p id="auth-error" class="error-inline" role="alert"></p><button type="submit" class="primary wide" id="auth-submit">${register?'注册并登录':'登录'}</button></form><button type="button" class="text-button auth-guest" data-page="plan">先不登录，直接规划</button></div></section>`;
 }
 $('#app').addEventListener('submit',async e=>{
   if(e.target.id!=='auth-form')return;e.preventDefault();
@@ -93,22 +111,22 @@ $('#app').addEventListener('submit',async e=>{
     const result=await api(register?'/auth/register':'/auth/login',{username:data.username,password:data.password});
     await switchAccount(result.user);navigate('plan');toast(register?'注册成功，已登录':'登录成功');
   }catch(e){if(form.isConnected)error.textContent=e.message;}
-  finally{if(form.isConnected){button.disabled=false;button.textContent=register?'注册并登录 →':'登录 →';}}
+  finally{if(form.isConnected){button.disabled=false;button.textContent=register?'注册并登录':'登录';}}
 });
 function mapView(stops){
-  if(!state.trip||!stops?.length)return '<div class="map-empty"><span>⌖</span><strong>下一座城，下一段风景</strong><p>生成行程后查看高德地图与步行路线。</p></div>';
+  if(!state.trip||!stops?.length)return '<div class="map-empty">生成行程后，这里会显示地图和路线。</div>';
   const day=state.trip.days.find(d=>d.stops===stops)?.day||state.day;
   return routeMapMarkup(state.trip,day);
 }
-function routeLibrary(){const packs=new Map();for(const t of state.trips)if(t.route_pack&&!packs.has(t.route_pack.adcode))packs.set(t.route_pack.adcode,t);return `<section class="card route-library"><div class="card-head"><h2>自动生成的城市路线库</h2>${badge(packs.size+' 个区域')}</div><p class="subtitle">每次规划自动检索并保留城市地点与路线。再次生成会重新检查地点数据和步行路线。</p>${packs.size?`<div class="route-library-grid">${[...packs.values()].map(t=>`<article><h3>${esc(t.preferences.city)}${t.preferences.district?' · '+esc(t.preferences.district):''}</h3><p class="fineprint">${t.route_pack.poi_count} 个候选地点 · ${esc(t.route_pack.generated_at.slice(0,10))}</p><div class="toolbar"><button type="button" class="text-button" data-trip="${esc(t.id)}">查看路线 ↗</button><button type="button" class="text-button" data-city="${esc(t.preferences.city)}" data-district="${esc(t.preferences.district_adcode||'')}">重新规划 →</button></div></article>`).join('')}</div>`:'<p class="fineprint">选择城市或使用自动定位，生成第一份城市路线包。</p>'}</section>`;}
-function locationPanel(planning){return `<div class="location-panel"><div class="location-heading"><strong>⌖ 自动识别当前位置</strong><button type="button" class="secondary" id="${planning?'locate-plan':'locate'}" ${state.locating?'disabled':''}>${state.locating?'正在识别…':'重新识别位置'}</button></div><p class="fineprint">打开页面后自动请求定位。浏览器允许后，本次位置经后端发送给高德识别省市区及附近地点；本项目不保存定位，也不发送给模型。可拒绝授权并手动选择。</p><div id="location-result" role="status" aria-live="polite">${locationResult()}</div></div>`;}
+function routeLibrary(){const packs=new Map();for(const t of state.trips)if(t.route_pack&&!packs.has(t.route_pack.adcode))packs.set(t.route_pack.adcode,t);return `<section class="side-block"><h2 class="block-title">去过的地方</h2><div class="lib-grid">${[...packs.values()].map(t=>`<article class="lib-item"><div><strong>${esc(t.preferences.city)}${t.preferences.district?' · '+esc(t.preferences.district):''}</strong><small>${t.route_pack.poi_count} 个地点 · ${esc(t.route_pack.generated_at.slice(0,10))}</small></div><div class="lib-actions"><button type="button" class="chip-btn" data-trip="${esc(t.id)}">查看</button><button type="button" class="chip-btn strong" data-city="${esc(t.preferences.city)}" data-district="${esc(t.preferences.district_adcode||'')}">再规划</button></div></article>`).join('')}</div></section>`;}
+function locationPanel(planning){return `<div class="loc-bar"><span class="loc-icon">${icon('pin')}</span><div class="loc-body" id="location-result" role="status" aria-live="polite">${locationResult()}</div><button type="button" class="chip-btn" id="${planning?'locate-plan':'locate'}" ${state.locating?'disabled':''}>${state.locating?'定位中…':'重新定位'}</button></div>`;}
 function locationResult(){
-  if(state.locationMessage)return `<p class="location-message">${esc(state.locationMessage)}</p>`;
-  const l=state.location;if(!l)return '<p class="fineprint">授权后自动识别；也可直接手动规划。</p>';
-  const hint=l.dynamic_planning?'已识别城市，生成行程时将自动检索当地景点并编排路线。起点从当地候选地点中选择，当前位置到起点的路程另计。':!l.supported_city?'演示模式仅支持杭州样本；请开启实况服务生成此城市路线。':'已识别位置，可生成杭州演示路线。';
-  return `<p class="location-address"><strong>${esc(l.city)} · ${esc(l.district)}</strong><br>${esc(l.address)}</p>${l.nearby.length?`<p class="fineprint">附近：${l.nearby.map(p=>esc(p.name)).join('、')}</p>`:''}<p class="location-message">${esc(hint)}</p>${l.dynamic_planning&&l.position?`<div class="check-row" style="gap:16px;flex-wrap:wrap;margin:6px 0 0"><label><input type="checkbox" id="use-start-point" checked> 用当前位置作为起点</label><label><input type="checkbox" id="use-end-point"> 结束回到当前位置</label></div>`:''}${typeof l.elevation==='number'?`<p class="fineprint">当前海拔约 ${l.elevation} 米，来自 Open Topo Data 的 SRTM 90 米网格估算。</p>`:''}<p class="fineprint">${esc(l.source)} · 定位精度约 ${Math.round(l.accuracy)} m · ${esc(new Date(l.resolved_at).toLocaleTimeString('zh-CN'))}${l.applied?' · 已填入目的地，可手动修改':l.preserved_manual?' · 已保留您手动选择的目的地':''}</p>`;
+  if(state.locationMessage)return `<p class="loc-text">${esc(state.locationMessage)}</p>`;
+  const l=state.location;if(!l)return '<p class="loc-text">还没有定位</p>';
+  const note=!l.supported_city?'演示模式只能规划杭州':l.applied?'已设为目的地':l.preserved_manual?'目的地保持你选的不变':'';
+  return `<p class="loc-text"><strong>${esc(l.city)} · ${esc(l.district)}</strong>${note?`<span class="loc-note">${note}</span>`:''}</p><p class="loc-sub">${esc(l.address)}${typeof l.elevation==='number'?` · 海拔约 ${l.elevation} 米`:''}</p>${l.nearby?.length?`<p class="loc-sub">附近：${l.nearby.map(p=>esc(p.name)).join('、')}</p>`:''}${l.dynamic_planning&&l.position?`<div class="loc-toggles"><label class="toggle-chip"><input type="checkbox" id="use-start-point" checked><span>从这里出发</span></label><label class="toggle-chip"><input type="checkbox" id="use-end-point"><span>结束回到这里</span></label></div>`:''}`;
 }
-function paintLocation(){if($('#location-result'))$('#location-result').innerHTML=locationResult();for(const id of ['#locate-plan','#locate']){const b=$(id);if(b){b.disabled=state.locating;b.textContent=state.locating?'正在识别…':'重新识别位置';}}}
+function paintLocation(){if($('#location-result'))$('#location-result').innerHTML=locationResult();for(const id of ['#locate-plan','#locate']){const b=$(id);if(b){b.disabled=state.locating;b.textContent=state.locating?'定位中…':'重新定位';}}}
 function clearLocation(){locationRequest++;state.location=null;state.locationMessage='定位已清除。';state.locating=false;paintLocation();}
 async function recognizeLocation({automatic=false}={}){
   if(state.locating)return;
@@ -151,8 +169,13 @@ function destinationOptions(){
  const option=(value,label,selected)=>`<option value="${esc(value)}" ${selected?'selected':''}>${esc(label)}</option>`;
  return {province:regions.map(p=>option(p.name,p.name,p===province)).join(''),city:province.cities.map(c=>option(c.name,c.name,c===city)).join(''),district:option('','全市范围',!state.planDistrict)+city.districts.map(d=>option(d.adcode,d.name,d.adcode===state.planDistrict)).join('')};
 }
-function destinationHint(){return state.config?.data_mode==='demo'?'演示模式仅支持杭州全市样本':state.regionError?'完整列表暂不可用，可重试或使用自动定位':state.regionsReady?'先选省份和城市，再选区县；也可保留全市范围':'正在加载省、市、区县列表…';}
-function destinationFields(){const options=destinationOptions();return `<div class="field full"><span>目的地</span><div class="destination-grid"><label class="field">省份<select name="province" required>${options.province}</select></label><label class="field">城市<select name="city" required>${options.city}</select></label><label class="field">区县<select name="district_adcode">${options.district}</select></label></div><small id="city-hint">${destinationHint()}</small><button type="button" class="text-button" id="retry-regions" ${state.regionError?'':'hidden'}>重新加载省市区 ↻</button></div>`;}
+function destinationHint(){return state.regionError?'城市列表没加载出来，可以重试，或直接用定位。':state.regionsReady||state.config?.data_mode==='demo'?'':'正在加载城市列表…';}
+function destinationFields(){
+ const options=destinationOptions();
+ // 演示模式只有杭州一个选项，下拉框没有意义：直接写明，下拉框保留在 DOM 里供表单提交。
+ const fixed=state.config?.data_mode==='demo';
+ return `<div class="field full"><span class="field-label">去哪儿</span>${fixed?`<div class="dest-fixed">${icon('pin')}<strong>${esc(state.planCity)}</strong>${badge('演示模式只有杭州',true)}</div>`:''}<div class="dest-grid" ${fixed?'hidden':''}><select name="province" aria-label="省份" required>${options.province}</select><select name="city" aria-label="城市" required>${options.city}</select><select name="district_adcode" aria-label="区县">${options.district}</select></div><small id="city-hint">${destinationHint()}</small><button type="button" class="text-button" id="retry-regions" ${state.regionError?'':'hidden'}>重新加载城市列表</button></div>`;
+}
 function paintDestination(){
  const form=$('#plan-form');if(!form)return;const options=destinationOptions();
  form.querySelector('[name="province"]').innerHTML=options.province;form.querySelector('[name="city"]').innerHTML=options.city;form.querySelector('[name="district_adcode"]').innerHTML=options.district;
@@ -171,52 +194,56 @@ async function loadRegions(){
 }
 function planPage(){
   const d=state.draft;
-  const options=(values,current)=>values.map(([value,label])=>`<option value="${esc(value)}" ${String(current)===String(value)?'selected':''}>${esc(label)}</option>`).join('');
-  return `<section class="plan-intro"><div><p class="eyebrow"><span class="live-dot"></span> 体感自适应 · 城市旅行</p><h1>好风景，<br>不必<span class="serif-accent">赶路。</span></h1><p class="intro-description">告诉慢行你想去哪。<br>路线随你的状态调整，每次改变由你决定。</p></div><span class="edition">THE CITY, AT YOUR PACE<br>慢行城市指南 / 01</span></section>
-  <div class="plan-layout"><section class="planner-panel"><div class="section-label"><span>01 / 从这里出发</span><span>无需设备，也能使用</span></div><h2 class="sr-only">定制你的旅程</h2>
-  <form id="plan-form" aria-busy="${state.planPending}">
+  const radios=(name,values,current)=>`<div class="segmented" role="radiogroup">${values.map(([value,label])=>`<label><input type="radio" name="${name}" value="${esc(value)}" ${String(current)===String(value)?'checked':''}><span>${esc(label)}</span></label>`).join('')}</div>`;
+  const recent=state.trips.length?`<section class="side-block"><h2 class="block-title">最近的行程</h2><div class="recent-list">${state.trips.slice(0,3).map(t=>`<button class="recent-item" data-trip="${esc(t.id)}"><span class="recent-city">${esc(t.preferences.city)}</span><small>${esc(t.preferences.date)} · ${t.preferences.days} 天</small>${icon('arrow')}</button>`).join('')}</div></section>`:'';
+  const side=recent+(state.trips.some(t=>t.route_pack)?routeLibrary():'');
+  return `<section class="hero"><img src="/lake.svg" alt=""><div class="hero-copy"><h1>想去哪儿走走？</h1><p>选好地方和日期，路线交给慢行。</p></div></section>
+  <div class="plan-layout ${side?'':'solo'}"><form id="plan-form" class="card plan-card" aria-busy="${state.planPending}"><h2 class="sr-only">定制你的旅程</h2>
+    ${locationPanel(true)}
     ${destinationFields()}
+    <div class="form-grid">
+      <label class="field"><span class="field-label">哪天出发</span><span class="temporal-control"><input name="date" aria-label="旅行日期" type="date" value="${esc(d.date)}" required></span></label>
+      <div class="field"><span class="field-label">玩几天</span>${radios('days',[[1,'1 天'],[2,'2 天']],d.days)}</div>
+    </div>
+    <div class="field"><span class="field-label">想看什么 <small>可多选</small></span><div class="chips">${['自然','人文','建筑','展览','美食'].map(v=>`<button type="button" class="chip ${state.interests.includes(v)?'selected':''}" data-interest="${v}" aria-pressed="${state.interests.includes(v)}"><span aria-hidden="true">${INTEREST_EMOJI[v]}</span>${v}</button>`).join('')}</div></div>
+    <div class="field"><span class="field-label">和谁去</span>${radios('companion',['独自','情侣','亲子','长辈同行'].map(v=>[v,v]),d.companion)}</div>
+    <label class="field"><span class="field-label range-label">每天最多走 <strong id="walk-label">${esc(d.walk_limit_km)} 公里</strong></span><input name="walk_limit_km" id="walk-limit" type="range" min="1" max="15" step="1" value="${esc(d.walk_limit_km)}"></label>
+    <div class="form-grid three">
+      <label class="field"><span class="field-label">几点出发</span><span class="temporal-control"><input name="start_time" type="time" value="${esc(d.start_time)}" required></span></label>
+      <label class="field"><span class="field-label">几点结束</span><span class="temporal-control"><input name="end_time" type="time" value="${esc(d.end_time)}" required></span></label>
+      <label class="field"><span class="field-label">总预算（元）</span><input name="budget" type="number" inputmode="numeric" min="0" max="10000" value="${esc(d.budget)}" required></label>
+    </div>
     ${startEndFields()}
-    <div class="form-grid essential-fields"><label class="field">哪天出发<span class="temporal-control"><input name="date" aria-label="旅行日期" type="date" value="${esc(d.date)}" required></span></label><label class="field">留几天<select name="days" aria-label="旅行天数">${options([[1,'一日漫游'],[2,'两日慢游']],d.days)}</select></label></div>
-    <details class="preferences"><summary><span>按你的节奏 <small id="preference-summary">${esc(d.companion)} · 每日 ${esc(d.walk_limit_km)} km · ¥${esc(d.budget)}</small></span><span class="expand-mark" aria-hidden="true">＋</span></summary><div class="preferences-body">
-      <div class="field"><span>想遇见什么 <small>可多选</small></span><div class="chips">${['自然','人文','建筑','展览','美食'].map(v=>`<button type="button" class="chip ${state.interests.includes(v)?'selected':''}" data-interest="${v}" aria-pressed="${state.interests.includes(v)}">${v}</button>`).join('')}</div></div>
-      <div class="form-grid"><label class="field">同行伙伴<select name="companion">${options(['独自','情侣','亲子','长辈同行'].map(v=>[v,v]),d.companion)}</select></label><label class="field">总预算（元）<input name="budget" type="number" inputmode="numeric" min="0" max="10000" value="${esc(d.budget)}" required></label><label class="field">每日出发<span class="temporal-control"><input name="start_time" type="time" value="${esc(d.start_time)}" required></span></label><label class="field">每日结束<span class="temporal-control"><input name="end_time" type="time" value="${esc(d.end_time)}" required></span></label></div>
-      <label class="field"><span class="range-label">每日步行上限 <strong id="walk-label">${esc(d.walk_limit_km)} 公里</strong></span><input name="walk_limit_km" id="walk-limit" type="range" min="1" max="15" step="1" value="${esc(d.walk_limit_km)}"><span class="range-label"><small>轻松一点</small><small>多探索一点</small></span></label>
-      <p class="fineprint">步行路线 · 起点自动选择。未知票价与预约费用需出发前核实。</p>
-    </div></details>
-    <label class="check-row model-consent"><input name="model_consent" type="checkbox" ${state.planConsent?'checked':''}><span><strong>允许将兴趣和行程节点发送给 DeepSeek</strong>，用来生成地点说明与结束后的收尾文字。不包含身份、定位和心率；不勾选也能规划。</span></label>
-    <button class="primary generate" type="submit" id="generate-button" ${state.planPending?'disabled':''}><span>${state.planPending?'正在为你编排行程…':'生成我的行程'}</span><span aria-hidden="true">${state.planPending?'◌':'↗'}</span></button>
+    <label class="switch-row model-consent"><span class="switch-copy"><strong>是否将兴趣和行程节点发送给 DeepSeek</strong><small>用来生成地点说明与结束后的收尾文字。关着也能正常规划。</small></span><input name="model_consent" type="checkbox" class="switch" ${state.planConsent?'checked':''}></label>
+    <div class="cta-bar"><button class="primary generate" type="submit" id="generate-button" ${state.planPending?'disabled':''}>${state.planPending?'<span class="spinner" aria-hidden="true"></span>正在生成…':`生成行程 ${icon('arrow')}`}</button></div>
     <div id="plan-error" class="error-inline" role="alert">${esc(state.planError)}</div>
-    <p class="plan-status" role="status">${state.planPending?'正在检索地点与步行路线，可能需要数十秒。可以切换页面，完成后会提醒你。':'先规划，再出发。走累了，随时点「轻松一点」。'}</p>
-    <details class="optional-settings"><summary>定位 <span>可选</span></summary><div class="preferences-body">${locationPanel(true)}</div></details>
-    <p class="data-note">${state.config?.data_mode==='live'?'实况地点与步行路线 · 营业、预约和费用待核实':'当前为杭州演示体验 · 示例路线不可用于实际导航'}</p>
-  </form></section>
-  <aside class="plan-story"><div class="story-art"><img src="/lake.svg" alt="湖岸与山景插画"><span class="art-caption">慢一点，看见更多。<small>城市漫游概念插画</small></span></div><div class="story-copy"><span class="eyebrow">A JOURNEY THAT LISTENS</span><h2>计划有方向，<br>旅程有余地。</h2><p>天气变了，或只是想休息一下。<br>慢行给出新建议，你决定怎么走。</p><div class="story-promise"><span>01 选一座城</span><span>02 生成路线</span><span>03 随感受调整</span></div></div></aside></div>
-  ${state.trips.length?`<section class="recent-trips"><div class="section-label"><span>02 / 接着上次的期待</span><span>我的行程</span></div><div class="recent-grid">${state.trips.slice(0,3).map(t=>`<button data-trip="${esc(t.id)}"><span><small>${esc(t.preferences.date)} · ${t.preferences.days} 日</small><strong>${esc(t.preferences.city)}</strong></span><span aria-hidden="true">↗</span></button>`).join('')}</div></section>`:''}
-  <section class="how-it-works"><div><span>01</span><h3>想去，就出发</h3><p>选城市与日期，安排适合你的步行路线。</p></div><div><span>02</span><h3>累了，就慢一点</h3><p>途中反馈感受，设备连接始终可选。</p></div><div><span>03</span><h3>改线，你说了算</h3><p>先看少走多远、会错过什么，再确认。</p></div></section>${state.trips.some(t=>t.route_pack)?routeLibrary():''}`;
+    ${state.planPending?'<p class="plan-status" role="status">正在找地点、算步行路线，大概要几十秒。可以先去别的页面，好了会提醒你。</p>':''}
+  </form>${side?`<aside class="plan-side">${side}</aside>`:''}</div>`;
 }
-function empty(title,description){return `<section class="empty"><div class="empty-symbol">⌁</div><h2>${title}</h2><p>${description}</p><button class="primary" data-page="plan">规划第一段旅程 ↗</button></section>`;}
-function stats(items){return `<div class="stat-grid">${items.map(([title,value,note])=>`<div class="stat"><span>${esc(title)}</span><strong>${esc(value)}</strong><small>${esc(note)}</small></div>`).join('')}</div>`;}
+function empty(title,description){return `<section class="empty"><img src="/lake.svg" alt=""><h2>${title}</h2><p>${description}</p><button class="primary" data-page="plan">去规划 ${icon('arrow')}</button></section>`;}
+function stats(items){return `<div class="stat-grid">${items.map(([title,value,note])=>`<div class="stat"><span>${esc(title)}</span><strong>${esc(value)}</strong>${note?`<small>${esc(note)}</small>`:''}</div>`).join('')}</div>`;}
 function commerceInfo(p,{compact=false}={}){
   if(p.category!=='美食'&&p.per_capita_cost==null&&p.rating==null)return '';
   const cost=typeof p.per_capita_cost==='number'&&Number.isFinite(p.per_capita_cost)&&p.per_capita_cost>0?p.per_capita_cost:null;
   const rating=typeof p.rating==='number'&&Number.isFinite(p.rating)&&p.rating>0&&p.rating<=5?p.rating:null;
-  if(compact){const values=[cost!==null?`<span>参考人均 <strong>¥${esc(cost.toFixed(2).replace(/\.00$/,''))}</strong></span>`:'',rating!==null?`<span>评分 <strong>${esc(rating.toFixed(1))} / 5</strong></span>`:''].filter(Boolean);return values.length?`<div class="commerce-info"><div class="commerce-values">${values.join('')}</div></div>`:'';}
-  return `<div class="commerce-info"><div class="commerce-values"><span>参考人均 <strong>${cost===null?'暂无':'¥'+esc(cost.toFixed(2).replace(/\.00$/,''))}</strong></span><span>评分 <strong>${rating===null?'暂无':esc(rating.toFixed(1))+' / 5'}</strong></span></div>${p.commerce_source?`<p class="fineprint">来源：${esc(p.commerce_source)} · 获取于 ${esc(p.commerce_fetched_at?.replace('T',' ').slice(0,16)||'未知')}</p>`:'<p class="fineprint">暂无消费与评分数据，重新生成行程可查询。</p>'}</div>`;
+  const values=[cost!==null?`<span>参考人均 <strong>¥${esc(cost.toFixed(2).replace(/\.00$/,''))}</strong></span>`:'',rating!==null?`<span>评分 <strong>${esc(rating.toFixed(1))}</strong></span>`:''].filter(Boolean);
+  if(!values.length)return compact?'':'<div class="commerce-info"><span>还没有价格和评分</span></div>';
+  return `<div class="commerce-info">${values.join('')}</div>`;
 }
 function diningPlaces(trip){
   const places=(trip.poi_catalog||[]).filter(p=>p.category==='美食');
   if(!places.length)return '';
   const inDay=new Set((trip.days[state.day-1]?.stops||[]).map(stop=>stop.id));
-  return `<section class="card dining-places"><div class="card-head"><h2>本次检索的餐厅</h2>${badge(places.length+' 家')}</div><p class="subtitle">查看人均消费和评分，也可以直接排进当天的行程，或点开看这家的详情。参考人均不等于实际账单，也未计入行程确定费用。</p><div class="dining-grid">${places.map(p=>`<article class="dining-place"><h3>${esc(p.name)}</h3><p class="subtitle">${esc(p.description)}</p>${commerceInfo(p)}<div class="stop-actions"><button type="button" class="text-button" data-stop-detail="${esc(p.id)}">详情</button>${inDay.has(p.id)?'<span class="fineprint">已在当天行程里</span>':`<button type="button" class="text-button" data-add-stop="${esc(p.id)}">加进第 ${state.day} 天</button>`}<a class="source-link" href="${esc(p.source_url)}" target="_blank" rel="noopener noreferrer">查看高德地点 ↗</a></div></article>`).join('')}</div></section>`;
+  const source=places.find(p=>p.commerce_source)?.commerce_source;
+  return `<section class="card dining"><div class="card-head"><h2>附近的餐厅</h2>${badge(places.length+' 家')}</div><div class="dining-grid">${places.map(p=>`<article class="dining-item"><h3>${esc(p.name)}</h3>${commerceInfo(p)}<p class="muted">${esc(p.description)}</p><div class="stop-actions">${inDay.has(p.id)?'<span class="tag tone-nature">已在当天行程里</span>':`<button type="button" class="chip-btn strong" data-add-stop="${esc(p.id)}">${icon('plus')}加进第 ${state.day} 天</button>`}<button type="button" class="chip-btn" data-stop-detail="${esc(p.id)}">详情</button>${p.source_url?`<a class="chip-btn" href="${esc(p.source_url)}" target="_blank" rel="noopener noreferrer">高德</a>`:''}</div></article>`).join('')}</div>${source?`<p class="fineprint">人均和评分来自${esc(source)}，仅供参考。</p>`:''}</section>`;
 }
 function mustVisitList(){if(!state.mustVisit)state.mustVisit=[...(state.trip?.preferences?.must_visit||[])].map(m=>({name:m.name,lat:m.lat,lng:m.lng,category:m.category,duration_min:m.duration_min}));return state.mustVisit;}
-function timeline(day){const lockedNames=new Set(mustVisitList().map(m=>m.name));return `<div class="timeline scenery-list" data-day="${day.day}">${day.stops.map((p,index)=>{
+function timeline(day){const lockedNames=new Set(mustVisitList().map(m=>m.name));return `<ol class="timeline" data-day="${day.day}">${day.stops.map((p,index)=>{
  const reason=cleanStopReason(p.recommendation_reason,p.name)||defaultStopReason(p,state.trip?.preferences);
- const link=`https://uri.amap.com/marker?position=${p.lng},${p.lat}&name=${encodeURIComponent(p.name)}&coordinate=gaode&callnative=0`;
  const previous=index?day.stops[index-1]:state.trip?.preferences?.start_point;
- return `<article class="route-stop"><div class="stop-body"><h3 class="stop-title">${esc(p.name)}</h3>${commerceInfo(p,{compact:true})}<p class="stop-description">${esc(reason)}</p><div class="stop-actions"><a class="source-link" href="${esc(link)}" target="_blank" rel="noopener noreferrer">查看高德地点</a>${previous?`<a class="source-link" href="${esc(amapNavigation(previous,p))}" target="_blank" rel="noopener noreferrer">导航</a>`:''}<button type="button" class="text-button" data-stop-detail="${esc(p.id)}">详情</button><button type="button" class="text-button" data-must="${esc(p.id)}">${lockedNames.has(p.name)?'✓ 已锁定为必去':'锁定为必去'}</button>${p.category==='终点'?'':`<button type="button" class="text-button" data-stop-remove="${esc(p.id)}">移出</button>`}</div></div></article>`;
-}).join('')}</div>`;}
+ const locked=lockedNames.has(p.name);
+ return `<li class="stop"><span class="stop-no">${index+1}</span><div class="stop-main"><div class="stop-top">${p.arrival?`<time>${esc(p.arrival)}</time>`:''}${tag(p.category)}${locked?'<span class="tag tone-must">必去</span>':''}</div><h3 class="stop-name">${esc(p.name)}</h3>${commerceInfo(p,{compact:true})}<p class="stop-desc">${esc(reason)}</p><div class="stop-actions">${previous?`<a class="chip-btn strong" href="${esc(amapNavigation(previous,p))}" target="_blank" rel="noopener noreferrer">${icon('nav')}导航</a>`:''}<button type="button" class="chip-btn" data-stop-detail="${esc(p.id)}">详情</button><button type="button" class="chip-btn ${locked?'on':''}" data-must="${esc(p.id)}" aria-pressed="${locked}" aria-label="${locked?'取消必去':'设为必去'}">${icon('star')}必去</button>${p.category==='终点'?'':`<button type="button" class="chip-btn quiet" data-stop-remove="${esc(p.id)}">移出</button>`}</div></div></li>`;
+}).join('')}</ol>`;}
 
 // ---------------- 景点详情与增删 ----------------
 // 高德 URI 导航。官方文档写明「途径点只在驾车模式下有效」，所以步行无法把整天串成
@@ -274,18 +301,18 @@ function stopDetailMarkup(){
   const next=scheduled?stops[index+1]:null;
   const link=`https://uri.amap.com/marker?position=${stop.lng},${stop.lat}&name=${encodeURIComponent(stop.name)}&coordinate=gaode&callnative=0`;
   const locked=mustVisitList().some(item=>item.name===stop.name);
-  return `<p class="eyebrow">PLACE</p><h2>${esc(stop.name)}</h2><p class="subtitle">${esc(stop.description||'')}</p>
-  <ul class="inline-list">
-    <li><span>类型</span><small>${esc(stop.category)}${stop.indoor?' · 室内':''}</small></li>
-    ${scheduled?`<li><span>计划时间</span><small>${esc(stop.arrival)} — ${esc(stop.departure)} · 停留 ${stop.duration_min} 分钟</small></li>`:''}
-    ${scheduled&&stop.leg?`<li><span>从上一站步行</span><small>${stop.leg.distance_m} m · ${stop.leg.duration_min} 分钟（${esc(stop.leg.source)}）</small></li>`:''}
-    <li><span>坐标</span><small>GCJ-02 ${stop.lng.toFixed(5)}, ${stop.lat.toFixed(5)}</small></li>
-    <li><span>海拔</span><small>${detail.loading?'正在查询…':typeof detail.elevation==='number'?`约 ${detail.elevation} 米 · SRTM 90 米网格估算`:'暂不可用'}</small></li>
-    ${stop.per_capita_cost!=null||stop.rating!=null?`<li><span>参考人均 / 评分</span><small>${stop.per_capita_cost!=null?'¥'+stop.per_capita_cost:'暂无'} / ${stop.rating!=null?stop.rating+' 分':'暂无'}</small></li>`:''}
-    <li><span>开放与预约</span><small>${esc(stop.reservation||'需自行核实')}</small></li>
+  const row=(label,value)=>`<li><span>${label}</span><strong>${value}</strong></li>`;
+  return `<div class="modal-tags">${tag(stop.category)}${stop.indoor?'<span class="tag tone-rest">室内</span>':''}${locked?'<span class="tag tone-must">必去</span>':''}</div><h2>${esc(stop.name)}</h2>${stop.description?`<p>${esc(stop.description)}</p>`:''}
+  <ul class="detail-list">
+    ${scheduled&&stop.arrival?row('时间',`${esc(stop.arrival)} — ${esc(stop.departure)} · 停留 ${stop.duration_min} 分钟`):''}
+    ${scheduled&&stop.leg?.distance_m?row('从上一站走过来',`${stop.leg.distance_m} m · ${stop.leg.duration_min} 分钟`):''}
+    ${stop.per_capita_cost!=null||stop.rating!=null?row('参考人均 / 评分',`${stop.per_capita_cost!=null?'¥'+stop.per_capita_cost:'未知'} / ${stop.rating!=null?stop.rating+' 分':'未知'}`):''}
+    ${stop.reservation?row('开放与预约',esc(stop.reservation)):''}
+    ${row('海拔',detail.loading?'查询中…':typeof detail.elevation==='number'?`约 ${detail.elevation} 米`:'查不到')}
+    ${row('坐标',`GCJ-02 ${stop.lng.toFixed(5)}, ${stop.lat.toFixed(5)}`)}
   </ul>
-  <div class="modal-actions">${previous?`<a class="primary" href="${esc(amapNavigation(previous,stop))}" target="_blank" rel="noopener noreferrer">导航到这一站</a>`:''}${next?`<a class="secondary" href="${esc(amapNavigation(stop,next))}" target="_blank" rel="noopener noreferrer">去下一站</a>`:''}<a class="secondary" href="${esc(link)}" target="_blank" rel="noopener noreferrer">高德地点页</a></div>
-  <div class="modal-actions">${scheduled?`<button type="button" class="secondary" data-must="${esc(stop.id)}">${locked?'取消必去标记':'锁定为必去'}</button>${stop.category==='终点'?'':`<button type="button" class="danger" data-stop-remove="${esc(stop.id)}">移出当天行程</button>`}`:`<button type="button" class="secondary" data-add-stop="${esc(stop.id)}">加进第 ${state.day} 天</button>`}<button type="button" class="secondary modal-close">关闭</button></div>`;
+  <div class="modal-actions">${previous?`<a class="primary" href="${esc(amapNavigation(previous,stop))}" target="_blank" rel="noopener noreferrer">${icon('nav')}导航到这里</a>`:''}${next?`<a class="secondary" href="${esc(amapNavigation(stop,next))}" target="_blank" rel="noopener noreferrer">去下一站</a>`:''}<a class="secondary" href="${esc(link)}" target="_blank" rel="noopener noreferrer">在高德里看</a></div>
+  <div class="modal-actions">${scheduled?`<button type="button" class="secondary" data-must="${esc(stop.id)}">${icon('star')}${locked?'取消必去':'设为必去'}</button>${stop.category==='终点'?'':`<button type="button" class="danger" data-stop-remove="${esc(stop.id)}">移出当天行程</button>`}`:`<button type="button" class="primary" data-add-stop="${esc(stop.id)}">${icon('plus')}加进第 ${state.day} 天</button>`}</div>`;
 }
 async function loadStopElevation(stop){
   const id=stop.id;
@@ -311,18 +338,17 @@ async function loadJournal(){
 const journalFor=(day,stopId)=>state.journal[`${day}:${stopId}`]||null;
 function journalBlock(day,stop){
   const entry=journalFor(day,stop.id);
-  return `<section class="card journal-card"><div class="card-head"><h2>这一站的日记</h2>${badge(entry?'已记录':'还没有')}</div>
-  <p class="journal-text">${entry?.text?esc(entry.text):'写下这一刻的想法，配几张照片，放进这一站的回忆里。'}</p>
+  return `<section class="card journal-card"><div class="card-head"><h2>这一站的日记</h2>${entry?badge('已记录'):''}</div>
+  ${entry?.text?`<p class="journal-text">${esc(entry.text)}</p>`:''}
   ${entry?.photos?.length?`<div class="journal-photos">${entry.photos.map(photo=>`<img src="${esc(photo.url)}" alt="${esc(stop.name)}的照片" loading="lazy">`).join('')}</div>`:''}
-  <button type="button" class="secondary" id="edit-journal">${entry?'编辑这一站的日记':'写这一站的日记'}</button>
-  <p class="fineprint">文字和照片只存在你自己的账号数据里：网页端落在本地 SQLite，App 落在设备存储。不发给模型，也不上传到别处；删除账号记录时会一并删除。</p></section>`;
+  <button type="button" class="secondary" id="edit-journal">${icon('edit')}${entry?'修改日记':'写两句，拍几张'}</button></section>`;
 }
 function journalEditor(){
   const draft=state.journalDraft;if(!draft)return '';
-  return `<p class="eyebrow">JOURNAL</p><h2>${esc(draft.stop_name)}</h2><p class="subtitle">照片只在这里保存，不上传到别处。选择后会在本机压缩到长边 1280 像素再保存。</p>
-  <label class="field">这一刻<textarea id="journal-text" name="journal-text" rows="6" maxlength="${JOURNAL_TEXT_MAX}" placeholder="走了多久、看见了什么、想记住什么…">${esc(draft.text)}</textarea></label>
+  return `<h2>${esc(draft.stop_name)}</h2>
+  <label class="field"><span class="field-label">这一刻</span><textarea id="journal-text" name="journal-text" rows="5" maxlength="${JOURNAL_TEXT_MAX}" placeholder="看见了什么，想记住什么…">${esc(draft.text)}</textarea></label>
   ${draft.photos.length?`<div class="journal-photos">${draft.photos.map((photo,index)=>`<figure class="journal-photo"><img src="${esc(photo.url)}" alt="第 ${index+1} 张待保存的照片"><button type="button" class="text-button" data-journal-photo-remove="${index}">删除这张</button></figure>`).join('')}</div>`:''}
-  <label class="field">添加照片<input type="file" id="journal-file" accept="image/jpeg,image/png,image/webp" multiple ${draft.photos.length>=JOURNAL_PHOTOS_MAX?'disabled':''}><small>最多 ${JOURNAL_PHOTOS_MAX} 张，单张不超过 2MB（已压缩 ${draft.photos.length}/${JOURNAL_PHOTOS_MAX}）。</small></label>
+  <label class="field"><span class="field-label">照片 <small>${draft.photos.length} / ${JOURNAL_PHOTOS_MAX} 张</small></span><input type="file" id="journal-file" accept="image/jpeg,image/png,image/webp" multiple ${draft.photos.length>=JOURNAL_PHOTOS_MAX?'disabled':''}></label>
   <p class="error-inline" role="alert">${esc(draft.error||'')}</p>
   <div class="modal-actions"><button type="button" class="primary" id="save-journal" ${draft.busy?'disabled':''}>${draft.busy?'正在保存…':'保存日记'}</button><button type="button" class="secondary modal-close">取消</button></div>`;
 }
@@ -412,13 +438,14 @@ async function writeSummary(){
 function summaryCard(report){
   const consented=state.trip?.preferences?.model_consent===true;
   const summary=report.summary;
-  if(summary)return `<section class="card summary-card"><div class="card-head"><p class="eyebrow">AFTERWARDS</p>${badge('模型生成',true)}</div><p class="summary-text">${esc(summary.text)}</p><p class="fineprint">由 ${esc(summary.source)} 生成于 ${esc(new Date(summary.generated_at).toLocaleString('zh-CN'))}，只依据本次行程的城市、日期、地点、打卡与改线选择，不含坐标和任何健康数据。<button type="button" class="text-button" id="write-summary" ${state.summaryLoading?'disabled':''}>${state.summaryLoading?'正在重写…':'换一段'}</button></p><p class="error-inline">${esc(state.summaryError)}</p></section>`;
-  if(!consented)return `<section class="card summary-card"><div class="card-head"><p class="eyebrow">AFTERWARDS</p>${badge('未开启',true)}</div><p class="subtitle">结束漫游后可以让 DeepSeek 按这次行程写一段收尾文字。这份行程没有开启模型授权，所以暂时不能生成。</p><button type="button" class="secondary" data-page="plan">去规划页开启模型授权 →</button></section>`;
-  return `<section class="card summary-card"><div class="card-head"><p class="eyebrow">AFTERWARDS</p>${badge('可选',true)}</div><p class="subtitle">让 DeepSeek 用这次真实走过的地点、打卡和改线选择，写一段安静的收尾文字。只会发送城市、日期、地点名与类别，不发送坐标和健康数据。</p><button type="button" class="secondary" id="write-summary" ${state.summaryLoading?'disabled':''}>${state.summaryLoading?'正在写…':'写一段收尾文字 →'}</button><p class="error-inline">${esc(state.summaryError)}</p></section>`;
+  const head=label=>`<div class="card-head"><h2>收尾的话</h2>${label?badge(label,true):''}</div>`;
+  if(summary)return `<section class="card summary-card">${head('AI 生成')}<p class="summary-text">${esc(summary.text)}</p><div class="summary-foot"><small>${esc(summary.source)} · ${esc(new Date(summary.generated_at).toLocaleString('zh-CN'))}</small><button type="button" class="chip-btn" id="write-summary" ${state.summaryLoading?'disabled':''}>${state.summaryLoading?'正在重写…':'换一段'}</button></div><p class="error-inline">${esc(state.summaryError)}</p></section>`;
+  if(!consented)return `<section class="card summary-card">${head('')}<p class="muted">这份行程规划时没有开启 DeepSeek，所以写不了收尾文字。下次规划时打开开关就行。</p><button type="button" class="secondary" data-page="plan">去规划页</button></section>`;
+  return `<section class="card summary-card">${head('')}<p class="muted">让 DeepSeek 按这次走过的地点和你的选择，写一段收尾文字。</p><button type="button" class="primary" id="write-summary" ${state.summaryLoading?'disabled':''}>${state.summaryLoading?'正在写…':'写一段收尾文字'}</button><p class="error-inline">${esc(state.summaryError)}</p></section>`;
 }
 function journalListMarkup(journal){
-  if(!journal?.length)return `<section class="card"><h2>这一程的日记</h2><p class="fineprint">还没有日记。在「途中伴行」里每到一个站点就可以写下当时的想法和照片。</p></section>`;
-  return `<section class="card"><div class="card-head"><h2>这一程的日记</h2>${badge(journal.length+' 条')}</div><div class="journal-list">${journal.map(entry=>`<article class="journal-entry"><h3>第 ${entry.day} 天 · ${esc(entry.stop_name)}</h3>${entry.text?`<p class="journal-text">${esc(entry.text)}</p>`:''}${entry.photos.length?`<div class="journal-photos">${entry.photos.map(photo=>`<img src="${esc(photo.url)}" alt="${esc(entry.stop_name)}的照片" loading="lazy">`).join('')}</div>`:''}<p class="fineprint">${esc(new Date(entry.updated_at).toLocaleString('zh-CN'))}</p></article>`).join('')}</div></section>`;
+  if(!journal?.length)return `<section class="card"><h2>这一程的日记</h2><p class="muted">还没有日记。途中每到一站都可以写。</p></section>`;
+  return `<section class="card"><div class="card-head"><h2>这一程的日记</h2>${badge(journal.length+' 条')}</div><div class="journal-list">${journal.map(entry=>`<article class="journal-entry"><h3>第 ${entry.day} 天 · ${esc(entry.stop_name)}</h3>${entry.text?`<p class="journal-text">${esc(entry.text)}</p>`:''}${entry.photos.length?`<div class="journal-photos">${entry.photos.map(photo=>`<img src="${esc(photo.url)}" alt="${esc(entry.stop_name)}的照片" loading="lazy">`).join('')}</div>`:''}<small class="muted">${esc(new Date(entry.updated_at).toLocaleString('zh-CN'))}</small></article>`).join('')}</div></section>`;
 }
 
 // 当前视图标识：行程或旅行日一变化，换乘结果与高程结果就必须作废，不能跨日复用。
@@ -430,17 +457,17 @@ const pickerTargets={start:'起点',end:'终点',must:'必去地点','transit-fr
 const pickerLabel=target=>pickerTargets[target]||'地点';
 function placeResultsMarkup(){
   const p=state.picker;if(!p)return '';
-  if(p.loading)return '<p class="fineprint">正在检索地点…</p>';
+  if(p.loading)return '<p class="muted">搜索中…</p>';
   if(p.error)return `<p class="error-inline">${esc(p.error)}</p>`;
-  if(!p.searched)return '<p class="fineprint">输入地点名称后搜索，例如「西湖文化广场」或「某某酒店」。检索范围是当前城市。</p>';
-  if(!p.results.length)return '<p class="fineprint">没有找到匹配的地点，换个关键词或加上附近地标再试。</p>';
+  if(!p.searched)return '';
+  if(!p.results.length)return '<p class="muted">没找到，换个关键词或加上附近地标再试。</p>';
   return `<div class="place-list">${p.results.map((place,index)=>`<button type="button" class="place-item" data-place="${index}"><strong>${esc(place.name)}</strong><small>${esc(place.address||place.category)}</small></button>`).join('')}</div>`;
 }
 function paintPlaceResults(){if($('#place-results'))$('#place-results').innerHTML=placeResultsMarkup();}
 function placePicker(target){
   state.picker={target,results:[],loading:false,error:'',searched:false};
   const label=pickerLabel(target);
-  return `<p class="eyebrow">PLACE PICKER</p><h2>选择一个${label}</h2><p>按名称检索城市内的地点，结果来自高德地图。选中后会作为${label}参与规划。你输入的文字只用于检索，不会发送给模型。</p><form id="place-search"><label class="field">地点名称<input name="keyword" minlength="2" maxlength="40" placeholder="例如 西湖文化广场" required></label><button type="submit" class="primary" id="place-search-button">搜索地点</button></form><div id="place-results" role="status" aria-live="polite">${placeResultsMarkup()}</div>`;
+  return `<h2>选择一个${label}</h2><form id="place-search" class="search-row"><input name="keyword" aria-label="地点名称" minlength="2" maxlength="40" placeholder="搜地点，比如 西湖文化广场" required><button type="submit" class="primary" id="place-search-button">${icon('search')}搜索</button></form><div id="place-results" role="status" aria-live="polite">${placeResultsMarkup()}</div>`;
 }
 async function runPlaceSearch(keyword){
   const target=state.picker?.target;if(!target)return;
@@ -467,8 +494,8 @@ function applyPickedPlace(target,place){
   toast(target==='must'?`已加入必去「${place.name}」，点「按必去重新规划」生效`:`已设为${pickerLabel(target)}：${place.name}`);
 }
 function startEndFields(){
-  const clear=(point,kind)=>point?`<button type="button" class="text-button" id="clear-${kind}">清除${pickerLabel(kind)}</button>`:'';
-  return `<div class="field full"><span>自定义起点与终点 <small>可选</small></span><div class="toolbar"><button type="button" class="secondary" id="pick-start">${state.planStartPoint?'起点 · '+esc(state.planStartPoint.name):'选择起点'}</button><button type="button" class="secondary" id="pick-end">${state.planEndPoint?'终点 · '+esc(state.planEndPoint.name):'选择终点'}</button>${clear(state.planStartPoint,'start')}${clear(state.planEndPoint,'end')}</div><small>留空时起点按识别到的位置或就近地点决定，终点留空则当天最后一站即行程结束。也可以用上方定位里的「用当前位置作为起点」。</small></div>`;
+  const pick=(kind,point)=>`<span class="pick-item"><button type="button" class="pick-btn ${point?'set':''}" id="pick-${kind}">${icon('pin')}<span>${point?pickerLabel(kind)+' · '+esc(point.name):'选择'+pickerLabel(kind)}</span></button>${point?`<button type="button" class="icon-btn" id="clear-${kind}" aria-label="清除${pickerLabel(kind)}">${icon('close')}</button>`:''}</span>`;
+  return `<div class="field full"><span class="field-label">起点和终点 <small>${liveData()?'不选就自动安排':'演示模式下自动安排'}</small></span><div class="pick-row">${pick('start',state.planStartPoint)}${pick('end',state.planEndPoint)}</div></div>`;
 }
 
 // ---------------- 公交换乘 ----------------
@@ -486,17 +513,18 @@ function transitSelect(role,point){
 }
 function transitResult(result){
   if(!result?.options?.length)return '';
-  return `<div class="transit-options">${result.options.map((option,index)=>`<article class="transit-option"><div class="transit-head"><strong>${index===0?'推荐 · ':''}约 ${option.duration_min} 分钟</strong>${badge(option.transfers?option.transfers+' 次换乘':'直达')}</div><p class="fineprint">全程约 ${(option.distance_m/1000).toFixed(1)} km · 步行约 ${Math.round(option.walking_distance_m??0)} m · 票价 ${option.cost===null?'未提供':option.cost>0?'约 ¥'+option.cost:'免费'}</p><ol class="transit-legs">${option.segments.map(segment=>`<li><span>${transitModes[segment.type]||segment.type}</span><strong>${esc(segment.line||(segment.type==='walk'?'步行':'换乘'))}</strong><small>${esc([segment.from,segment.from!==segment.to?segment.to:''].filter(Boolean).join(' → '))||(segment.duration_min===null?'耗时未提供':'约 '+segment.duration_min+' 分钟')}</small></li>`).join('')}</ol></article>`).join('')}</div><p class="fineprint">${esc(result.source||'')} · ${esc(result.updated_at?.replace('T',' ').slice(0,16)||'')}。仅支持同城换乘，票价是参考值，首末班与拥挤度请以现场为准。</p>`;
+  return `<div class="transit-options">${result.options.map((option,index)=>`<article class="transit-option ${index===0?'best':''}"><div class="transit-head"><strong>约 ${option.duration_min} 分钟</strong>${index===0?badge('推荐',true):''}${badge(option.transfers?option.transfers+' 次换乘':'直达')}</div><p class="muted">步行约 ${Math.round(option.walking_distance_m??0)} m · 票价${option.cost===null?'未知':option.cost>0?'约 ¥'+option.cost:'免费'} · 全程 ${(option.distance_m/1000).toFixed(1)} km</p><ol class="transit-legs">${option.segments.map(segment=>`<li><span>${transitModes[segment.type]||segment.type}</span><strong>${esc(segment.line||(segment.type==='walk'?'步行':'换乘'))}</strong><small>${esc([segment.from,segment.from!==segment.to?segment.to:''].filter(Boolean).join(' → '))||(segment.duration_min===null?'':'约 '+segment.duration_min+' 分钟')}</small></li>`).join('')}</ol></article>`).join('')}</div><p class="fineprint">${esc(result.source||'')} · ${esc(result.updated_at?.replace('T',' ').slice(0,16)||'')}</p>`;
 }
 function transitCard(){
-  if(!liveData())return `<section class="card"><div class="card-head"><h2>怎么去 · 公交换乘</h2>${badge('需要实况服务',true)}</div><p class="subtitle">公交换乘由高德路径规划提供，需要配置高德 Key 并开启实况服务。当前是演示模式，只提供步行路线估算。</p></section>`;
+  const head=extra=>`<div class="card-head"><h2>公交换乘</h2>${extra||''}</div>`;
+  if(!liveData())return `<section class="card">${head(badge('演示模式不可用',true))}<p class="muted">接入高德实时数据后可以查公交和地铁。</p></section>`;
   const key=viewKey();
   if(state.transit.key!==key)state.transit={key,from:null,to:null,result:null,error:'',loading:false};
   const candidates=transitCandidates();
-  if(candidates.length<2)return `<section class="card"><div class="card-head"><h2>怎么去 · 公交换乘</h2>${badge('需要行程')}</div><p class="subtitle">当天行程至少要有两个节点，才能查询步行之外的公交换乘方案。</p></section>`;
+  if(candidates.length<2)return `<section class="card">${head()}<p class="muted">当天至少有两站才能查。</p></section>`;
   const t=state.transit;
   if(!t.from)t.from=candidates[0];if(!t.to)t.to=candidates.at(-1);
-  return `<section class="card"><div class="card-head"><h2>怎么去 · 公交换乘</h2>${badge('高德实时换乘')}</div><p class="subtitle">补上步行之外的那一段：从当前位置去今天的起点，或从最后一站回到住处。默认查询当前位置到最后两站之间的路线。</p><div class="form-grid">${transitSelect('from',t.from)}${transitSelect('to',t.to)}</div><div class="toolbar"><button class="secondary" id="query-transit" ${t.loading?'disabled':''}>${t.loading?'正在查询…':'查询换乘方案 →'}</button><button type="button" class="text-button" data-pick="transit-from">出发地搜别的地点</button><button type="button" class="text-button" data-pick="transit-to">目的地搜别的地点</button></div><p id="transit-error" class="error-inline">${esc(t.error||'')}</p><div id="transit-result">${transitResult(t.result)}</div></section>`;
+  return `<section class="card">${head()}<div class="form-grid">${transitSelect('from',t.from)}${transitSelect('to',t.to)}</div><div class="toolbar"><button class="primary" id="query-transit" ${t.loading?'disabled':''}>${t.loading?'查询中…':'查路线'}</button><button type="button" class="chip-btn" data-pick="transit-from">换个出发地</button><button type="button" class="chip-btn" data-pick="transit-to">换个目的地</button></div><p id="transit-error" class="error-inline">${esc(t.error||'')}</p><div id="transit-result">${transitResult(t.result)}</div></section>`;
 }
 async function queryTransit(){
   const t=state.transit;
@@ -524,20 +552,20 @@ function elevationChart(samples){
 }
 function elevationResult(data){
   const s=data.summary,steep=data.segments.filter(segment=>segment.level==='steep'||segment.level==='noticeable').sort((a,b)=>Math.abs(b.grade_pct)-Math.abs(a.grade_pct)).slice(0,5);
-  return stats([['累计爬升',`${s.gain_m} m`,'按取样段累加'],['累计下降',`${s.loss_m} m`,'按取样段累加'],['最低 / 最高',`${s.min_m??'—'} / ${s.max_m??'—'} m`,data.dataset],['最陡上坡',s.max_up_grade_pct===null?'—':`${s.max_up_grade_pct}%`,`陡坡 ${s.steep_count} 段`]])
+  return stats([['累计爬升',`${s.gain_m} m`],['累计下降',`${s.loss_m} m`],['最低 / 最高',`${s.min_m??'—'} / ${s.max_m??'—'} m`],['最陡上坡',s.max_up_grade_pct===null?'—':`${s.max_up_grade_pct}%`,`陡坡 ${s.steep_count} 段`]])
     +elevationChart(data.samples)
-    +`<p class="fineprint">${esc([data.context,data.coordinate_note].filter(Boolean).join(' · '))}</p>`
-    +(steep.length?`<h3>值得留意的坡段</h3><ul class="inline-list">${steep.map(segment=>{
+    +(data.context?`<p class="chart-caption">${esc(data.context)}</p>`:'')
+    +(steep.length?`<h3>值得留意的坡段</h3><ul class="detail-list">${steep.map(segment=>{
       const where=segment.from_label&&segment.from_label===segment.to_label?`${esc(segment.from_label)} 附近`:`${esc(segment.from_label||'途中')} → ${esc(segment.to_label||'途中')}`;
-      return `<li><span>${where}</span><small>${segment.grade_pct>0?'上坡':'下坡'} ${Math.abs(segment.grade_pct)}% · 约 ${segment.distance_m} m · ${esc(segment.level_label)}</small></li>`;
-    }).join('')}</ul>`:'<p class="fineprint">按 90 米网格没有检出明显坡段。</p>')
-    +`<p class="fineprint">${esc(data.accuracy_note)}数据来源：${esc(data.source)}（${esc(data.dataset)}，${data.attributions.map(esc).join('、')}）。</p>`;
+      return `<li><span>${where}</span><strong>${segment.grade_pct>0?'上坡':'下坡'} ${Math.abs(segment.grade_pct)}% · 约 ${segment.distance_m} m · ${esc(segment.level_label)}</strong></li>`;
+    }).join('')}</ul>`:'<p class="muted">这条路线基本是平路。</p>')
+    +`<p class="fineprint">${esc(data.accuracy_note)} 数据：${esc(data.source)}（${data.attributions.map(esc).join('、')}）</p>`;
 }
 function elevationCard(){
   const key=viewKey();
   if(state.elevation.key!==key)state.elevation={key,loading:false,data:null,error:''};
   const e=state.elevation;
-  return `<section class="card"><div class="card-head"><h2>坡度与爬升</h2>${badge('高程估算')}</div><p class="subtitle">用 Open Topo Data 的 SRTM 90 米高程样本估算当天路线的爬升和坡段，帮你判断今天要不要少排两站。</p><button class="secondary" id="load-elevation" ${e.loading?'disabled':''}>${e.loading?'正在获取高程…':e.data?'重新计算爬升与坡段':'计算今天的爬升与坡段 →'}</button><p id="elevation-error" class="error-inline">${esc(e.error||'')}</p><div id="elevation-result">${e.data?elevationResult(e.data):''}</div></section>`;
+  return `<section class="card"><div class="card-head"><h2>坡度与爬升</h2></div><button class="${e.data?'secondary':'primary'}" id="load-elevation" ${e.loading?'disabled':''}>${e.loading?'正在计算…':e.data?'重新计算':'看看今天的路陡不陡'}</button><p id="elevation-error" class="error-inline">${esc(e.error||'')}</p><div id="elevation-result">${e.data?elevationResult(e.data):''}</div></section>`;
 }
 async function loadElevation(){
   if(!state.trip)return;
@@ -548,8 +576,42 @@ async function loadElevation(){
   finally{state.elevation.loading=false;if(revision===accountRevision&&state.page==='trip')await render();}
 }
 
-function tripPage(){if(!state.trip)return empty('旅程，从一个想法开始','选择日期和偏好，生成你的第一份城市漫游计划。');const t=state.trip,d=t.days[state.day-1];return heading('YOUR CITY, YOUR PACE',esc(t.preferences.city)+'，慢慢走。',`${esc(d.date)} · ${esc(t.preferences.city)}${t.preferences.district?' · '+esc(t.preferences.district):''} · ${esc(t.preferences.companion)} · 第 ${state.day} 天`,`<div class="toolbar">${mustVisitList().length?`<button class="secondary" id="replan-must">✦ 按必去重新规划（${mustVisitList().length}）</button>`:''}<button class="secondary" id="pick-must">＋ 搜索并锁定必去地点</button><button class="secondary" id="export-trip">↓ 导出行程</button><button class="primary" id="start-journey">${state.session&&!state.session.ended_at?'继续伴行':'开始漫游'} ↗</button></div>`)+`<div class="notice">${t.data_mode==='demo'?'演示行程：距离、耗时、天气均为样本或演示估算，不能用于实际导航。':'高德提供真实地点、步行耗时与距离；营业、票价与预约仍需核实。'} ${t.route_pack?'这是一份待核实草案，未知费用不代表免费，出发前请确认总预算。':'请通过官方渠道核实开放与预约信息。'}</div>`+stats([['行程节点',`${d.stops.length} 站`,'自然与人文交错'],['规划步行',`${(d.distance_m/1000).toFixed(1)} km`,t.data_mode==='demo'?'演示估算':'高德路线'],['游览时长',`${(d.duration_min/60).toFixed(1)} 小时`,'已预留节点间缓冲'],['地点费用',d.unknown_cost_count?'待核实':`¥${d.cost}`,d.unknown_cost_count?'预算 ¥'+t.preferences.budget+'，尚不能保证':'样本门票与餐饮']])+`<div class="layout"><section class="card"><div class="card-head"><h2>今日的风景清单</h2>${badge('行程版本 '+t.version)}</div><div class="route-tabs">${t.days.map(d=>`<button class="chip ${d.day===state.day?'selected':''}" data-day="${d.day}">DAY ${d.day} · ${esc(d.date.slice(5))}</button>`).join('')}</div>${timeline(d)}${d.skipped.length?`<details><summary>${d.skipped.length} 个候选节点因约束未安排</summary><p>${d.skipped.map(p=>esc((t.poi_catalog||state.pois).find(v=>v.id===p.id)?.name||p.id)+'：'+esc(p.reason)).join('<br>')}</p></details>`:''}</section><aside><section class="card preview-card"><div class="preview-top"><div class="card-head"><h2>路线一览</h2>${badge('高德地图')}</div></div>${mapView(d.stops)}<div class="map-foot"><div><span>${esc(t.weather.source)}</span><strong>${t.weather.temperature??'—'}° <small>${esc(t.weather.condition)}</small></strong></div><div><span>${esc(t.weather.time_label||'数据时间')}</span><small>${esc(t.weather.updated_at?.replace('T',' ').slice(0,16))}</small></div></div>${t.weather.source_url?`<p class="fineprint weather-attribution"><a href="https://www.qweather.com/" target="_blank" rel="noopener noreferrer">天气数据：和风天气 ↗</a> · <a href="https://developer.qweather.com/attribution.html" target="_blank" rel="noopener noreferrer">数据来源声明</a></p>`:''}${t.weather.fallback_reason?`<p class="fineprint weather-attribution">${esc(t.weather.fallback_reason)}</p>`:''}<div id="weather-live" class="fineprint" style="margin-top:10px">正在获取分钟级降水与天气预警…</div></section><section class="card tip-card"><h3>✦ 为什么这样安排</h3><p>${esc(t.explanation)}</p><p class="fineprint">说明来源：${esc(t.explanation_source)}</p></section><section class="card" style="margin-top:18px"><div class="card-head"><h2>雨天，也有好去处</h2>${badge('PLAN B',true)}</div><p class="subtitle">${d.plan_b.stops.length?d.plan_b.stops.map(p=>esc(p.name)).join(' → '):'当天没有符合开放与时间约束的室内路线，建议另选日期或结束户外行程。'}</p><p class="fineprint">途中触发建议后，仍需你确认。开放时间与室内属性需核实；若没有合适候选，建议就地避雨或结束户外行程。</p></section></aside></div>${transitCard()}${elevationCard()}${diningPlaces(t)}<section class="history"><h3>我的行程记录</h3>${state.trips.slice(0,5).map(t=>`<button data-trip="${esc(t.id)}"><span>${esc(t.preferences.date)} · ${esc(t.preferences.city)} ${t.preferences.days} 日漫游</span><span>查看 ↗</span></button>`).join('')}</section>`;}
-function sensorCard(){const s=state.sensor;return `<div class="sensor-header"><h2>跟随身体的节奏</h2>${badge(s.motionActive?'步频已开启':'可选设备')}</div><p class="subtitle">心率要连上设备才有读数；步频在开始漫游时自动开启，用手机加速度做实验性估计。两者都不影响手动反馈。</p><div class="sensor-grid"><div class="sensor-value heart"><span>♡ 当前心率</span><strong id="heart-value">—<small>bpm</small></strong></div><div class="sensor-value"><span>⌁ 估计步频</span><strong id="cadence-value">—<small>步/分</small></strong></div></div><svg class="pulse-chart" viewBox="0 0 350 55" aria-hidden="true"><path d="M0 30h350" stroke="#e8edde" stroke-dasharray="4 4"/><path id="pulse-line" d="M0 30h350" fill="none" stroke="#9cbb83" stroke-width="2"/></svg><p class="sensor-state" id="sensor-status" role="status">未连接设备 · 手动反馈模式</p><div class="device-options"><button class="secondary device-option" id="connect-watch"><strong>Apple Watch</strong><span>配套应用 · Safari 可用</span></button><button class="secondary device-option" id="connect-hr"><strong>蓝牙心率设备</strong><span>需浏览器支持网页蓝牙</span></button></div><div class="watch-progress" id="watch-progress" hidden><p id="watch-progress-text"></p><button class="text-button" id="view-watch">查看配对进度 →</button></div><div class="toolbar sensor-actions"><button class="secondary" id="calibrate" disabled>采集静息基线</button><button class="secondary" id="motion" ${s.motionActive?'disabled':''}>${s.motionActive?'步频已开启':'启用步频'}</button><button class="text-button" id="stop-sensors">停止传感器</button></div>${locationPanel(false)}<p class="fineprint" id="sensor-extra">Apple Watch需安装慢行配套应用，通过HTTPS临时转发；蓝牙心率在本页读取。请保持页面前台，锁屏后暂停趋势判断。</p>`;}
+// ---------------- 分钟级降水与天气预警（和风） ----------------
+// 只有配置了天气服务才请求，每份行程取一次；取不到就不显示，不占位。
+function weatherLiveMarkup(data){
+  const rain=data.minutely,alerts=data.alerts?.alerts||[];
+  const wet=rain&&(rain.raining_now||rain.rainy_minutes>0);
+  return (rain?`<p class="rain ${wet?'wet':''}"><span aria-hidden="true">${rain.raining_now?'🌧️':wet?'🌦️':'☀️'}</span>${esc(rain.summary||(wet?`未来 2 小时里有 ${rain.rainy_minutes*5} 分钟会下雨`:'未来 2 小时不下雨'))}</p>`:'')
+    +alerts.map(alert=>`<details class="alert"><summary><span aria-hidden="true">⚠️</span>${esc(alert.headline||alert.event)}</summary><p>${esc(alert.description)}</p>${alert.instruction?`<p>${esc(alert.instruction)}</p>`:''}</details>`).join('');
+}
+async function loadWeatherLive(){
+  const trip=state.trip;if(!trip||!state.config?.providers?.weather)return;
+  if(state.weatherLive?.trip!==trip.id){
+    state.weatherLive={trip:trip.id,data:null};
+    try{const data=await api('/weather?trip_id='+encodeURIComponent(trip.id));if(state.weatherLive?.trip===trip.id)state.weatherLive.data=data;}
+    catch{/* 实况降水是附加信息，取不到不影响行程页 */}
+  }
+  const box=$('#weather-live'),data=state.weatherLive?.data;
+  if(box&&state.page==='trip'&&state.trip?.id===trip.id&&data?.available)box.innerHTML=weatherLiveMarkup(data);
+}
+
+function tripPage(){
+  if(!state.trip)return empty('还没有行程','先去规划一段，路线会出现在这里。');
+  const t=state.trip,d=t.days[state.day-1],must=mustVisitList(),active=state.session&&!state.session.ended_at;
+  const skipped=d.skipped.length?`<details class="skipped"><summary>${d.skipped.length} 个地点没排进去</summary><ul>${d.skipped.map(p=>`<li><strong>${esc((t.poi_catalog||state.pois).find(v=>v.id===p.id)?.name||p.id)}</strong>${esc(p.reason)}</li>`).join('')}</ul></details>`:'';
+  const weather=`<section class="card weather-card"><div class="weather-main"><strong>${t.weather.temperature??'—'}°</strong><div><span>${esc(t.weather.condition)}</span><small>${esc(t.weather.source)} · ${esc(t.weather.updated_at?.replace('T',' ').slice(5,16))}</small></div></div><div id="weather-live"></div>${t.weather.fallback_reason?`<p class="fineprint">${esc(t.weather.fallback_reason)}</p>`:''}${t.weather.source_url?`<p class="fineprint"><a href="https://www.qweather.com/" target="_blank" rel="noopener noreferrer">天气数据：和风天气</a> · <a href="https://developer.qweather.com/attribution.html" target="_blank" rel="noopener noreferrer">数据来源声明</a></p>`:''}</section>`;
+  return `<section class="trip-hero"><div><p class="trip-meta">${esc(d.date)} · ${esc(t.preferences.companion)}${t.preferences.district?' · '+esc(t.preferences.district):''}</p><h1>${esc(t.preferences.city)}${t.days.length>1?`<small>第 ${state.day} 天</small>`:''}</h1></div><div class="trip-actions"><button class="primary big" id="start-journey">${active?'继续漫游':'开始漫游'} ${icon('arrow')}</button><button class="chip-btn" id="pick-must">${icon('plus')}加必去地点</button><button class="chip-btn" id="export-trip">${icon('download')}导出</button></div></section>
+  ${must.length?`<div class="banner"><span>${icon('star')}必去：${must.map(m=>esc(m.name)).join('、')}</span><button class="primary" id="replan-must">按必去重新规划</button></div>`:''}
+  ${t.data_mode==='demo'?'<p class="notice">演示数据：距离、时间和天气都是样例，不能用来导航。</p>':''}`
+  +stats([['站点',`${d.stops.length} 站`],['步行',`${(d.distance_m/1000).toFixed(1)} km`],['时长',`${(d.duration_min/60).toFixed(1)} 小时`],['花费',d.unknown_cost_count?'待确认':`¥${d.cost}`,d.unknown_cost_count?`${d.unknown_cost_count} 处价格未知`:`预算 ¥${t.preferences.budget}`]])
+  +`<div class="layout"><section class="card"><div class="card-head"><h2>行程安排</h2>${t.days.length>1?`<div class="segmented day-tabs">${t.days.map(day=>`<button type="button" class="${day.day===state.day?'selected':''}" data-day="${day.day}">第 ${day.day} 天</button>`).join('')}</div>`:''}</div>${timeline(d)}${skipped}</section>
+  <aside class="side-stack"><section class="card flush"><div class="card-head pad"><h2>地图</h2></div>${mapView(d.stops)}</section>${weather}
+  <section class="card note-card"><div class="card-head"><h3>为什么这样排</h3>${badge(t.explanation_source)}</div><p>${esc(t.explanation)}</p></section>
+  <section class="card note-card rainy"><h3><span aria-hidden="true">🌧️</span> 下雨的话</h3><p>${d.plan_b.stops.length?d.plan_b.stops.map(p=>esc(p.name)).join(' → '):'这天没有合适的室内路线，下雨建议改期或提前结束。'}</p></section></aside></div>
+  <div class="tool-grid">${transitCard()}${elevationCard()}</div>${diningPlaces(t)}
+  ${state.trips.length?`<section class="side-block"><h2 class="block-title">全部行程</h2><div class="recent-list wide">${state.trips.slice(0,5).map(x=>`<button class="recent-item ${x.id===t.id?'current':''}" data-trip="${esc(x.id)}"><span class="recent-city">${esc(x.preferences.city)}</span><small>${esc(x.preferences.date)} · ${x.preferences.days} 天${x.id===t.id?' · 当前':''}</small>${icon('arrow')}</button>`).join('')}</div></section>`:''}`;
+}
+function sensorCard(){const s=state.sensor;return `<div class="card-head"><h2>身体状态</h2>${state.session?.model_consent?badge('AI 判断已开'):''}</div><div class="sensor-grid"><div class="sensor-value heart"><span>当前心率</span><strong id="heart-value">--<small>bpm</small></strong></div><div class="sensor-value"><span>估计步频</span><strong id="cadence-value">--<small>步/分</small></strong></div></div><svg class="pulse-chart" viewBox="0 0 350 55" aria-hidden="true"><path d="M0 30h350" stroke="#e3e8df" stroke-dasharray="4 4"/><path id="pulse-line" d="M0 30h350" fill="none" stroke="#ef6b4a" stroke-width="2"/></svg><p class="sensor-state"><span id="sensor-status" role="status">未连接设备</span><span id="sensor-extra"></span></p><div class="device-options"><button class="secondary" id="connect-watch">连接 Apple Watch</button><button class="secondary" id="connect-hr">连接蓝牙心率带</button></div><div class="watch-progress" id="watch-progress" hidden><p id="watch-progress-text"></p><button class="text-button" id="view-watch">查看配对进度</button></div><div class="toolbar sensor-actions"><button class="chip-btn" id="calibrate" disabled>采集静息心率</button><button class="chip-btn" id="motion" ${s.motionActive?'disabled':''}>${s.motionActive?'步频已开启':'开启步频'}</button><button class="chip-btn quiet" id="stop-sensors">全部停止</button></div>${locationPanel(false)}<p class="fineprint">只用来提醒你调整节奏，不是医疗建议。</p>`;}
 function watchConnectionView(){
   const p=state.watchPairing,s=state.sensor;
   if(!p||p.session_id!==state.session?.id||state.session?.ended_at||state.session?.status==='paused')return {text:'连接已结束，可继续手动反馈。',retry:true};
@@ -566,10 +628,10 @@ function updateWatchUI(){
   if($('#watch-progress'))$('#watch-progress').hidden=!visible;
   if($('#watch-progress-text'))$('#watch-progress-text').textContent=v.text;
   if($('#watch-retry'))$('#watch-retry').hidden=!v.retry;
-  if($('#watch-dialog-state'))$('#watch-dialog-state').innerHTML=`<p class="watch-status" role="status">${esc(v.text)}</p>${v.code?`<div class="watch-code" aria-label="配对码 ${esc(v.code)}">${esc(v.code.slice(0,4))} ${esc(v.code.slice(4))}</div><p class="fineprint">仅限本次漫游、一次有效。请勿分享给他人。</p>`:''}`;
+  if($('#watch-dialog-state'))$('#watch-dialog-state').innerHTML=`<p class="watch-status" role="status">${esc(v.text)}</p>${v.code?`<div class="watch-code" aria-label="配对码 ${esc(v.code)}">${esc(v.code.slice(0,4))} ${esc(v.code.slice(4))}</div><p class="fineprint">只能用一次，别发给别人。</p>`:''}`;
 }
 function showWatchPairing(){
-  modal(`<p class="eyebrow">WATCH CONNECTION</p><h2>把手表，连接到这一程。</h2><p>在慢行手表应用输入服务地址和配对码，再选择“配对并开始”。</p><label class="watch-address-label">服务地址</label><p class="watch-server">${esc(location.origin)}</p>${location.origin.startsWith('https://')?'':'<p class="notice">当前是本机测试地址。真机需使用手表可访问且证书受信任的 HTTPS 地址。</p>'}<div id="watch-dialog-state"></div><p class="fineprint">保持网页前台。收到心率后可静坐至少30秒，采集参考基线；无需设备也可继续手动反馈。</p><div class="modal-actions"><button class="primary modal-close">返回漫游</button><button class="secondary" id="watch-retry" hidden>重新配对</button><button class="text-button" id="cancel-watch">断开连接</button></div>`);
+  modal(`<h2>在手表上输入配对码</h2><p>打开手表上的慢行应用，填入下面的服务地址和配对码，再点“配对并开始”。</p><label class="watch-address-label">服务地址</label><p class="watch-server">${esc(location.origin)}</p>${location.origin.startsWith('https://')?'':'<p class="notice">这是本机测试地址，真机上的手表连不到，需要换成手表能访问的 HTTPS 地址。</p>'}<div id="watch-dialog-state"></div><div class="modal-actions"><button class="primary modal-close">好了，回去</button><button class="secondary" id="watch-retry" hidden>重新配对</button><button class="text-button" id="cancel-watch">断开连接</button></div>`);
   updateWatchUI();
 }
 async function createWatchPairing(){
@@ -589,21 +651,30 @@ async function createWatchPairing(){
 }
 function suggestionCard(a){
   const changes=a.changes;
-  return `<section class="suggestion" aria-labelledby="suggestion-title"><div class="card-head"><p class="eyebrow">路线调整建议</p>${badge(a.demo?'演示触发':'待你确认',true)}</div><h2 id="suggestion-title">换个走法，也很好。</h2><p class="suggestion-reason">${esc(a.reason)}</p><div class="changes"><div><span>规划步行</span><strong>${changes.distance_saved_m>=0?'少走':'多走'} ${Math.abs(changes.distance_saved_m)}<small> m</small></strong></div><div><span>结束时间</span><strong>${changes.time_saved_min>=0?'提前':'延后'} ${Math.abs(changes.time_saved_min)}<small> 分钟</small></strong></div></div><div class="route-tradeoff"><div><span>＋ 新增停留</span><strong>${changes.added_stops.map(esc).join('、')||'无新增地点'}</strong></div><div><span>－ 将会跳过</span><strong>${changes.skipped_stops.map(esc).join('、')||'保留全部地点'}</strong></div></div>${(a.candidate?.stops||[]).filter(p=>p.category==='美食').map(p=>`<div class="suggestion-dining"><strong>${esc(p.name)}</strong>${commerceInfo(p)}</div>`).join('')}<p class="fineprint">${esc(a.decision_source)} · ${a.expires_at?'有效至 '+esc(new Date(a.expires_at).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'})):'10分钟内有效'} · ${state.trip.data_mode==='demo'?'距离为演示估算':'路线由高德计算'}</p><div class="suggestion-actions"><button class="primary" data-confirm="true">接受调整 ↗</button><button class="secondary" data-confirm="false">保留原路线</button></div><p class="confirmation-note">只有你接受后，行程才会改变。</p></section>`;
+  return `<section class="suggestion" aria-labelledby="suggestion-title"><div class="card-head"><h2 id="suggestion-title">要不要换个走法？</h2>${badge(a.demo?'演示':'等你决定',true)}</div><p class="suggestion-reason">${esc(a.reason)}</p><div class="changes"><div><span>步行</span><strong>${changes.distance_saved_m>=0?'少走':'多走'} ${Math.abs(changes.distance_saved_m)}<small> m</small></strong></div><div><span>结束时间</span><strong>${changes.time_saved_min>=0?'提前':'延后'} ${Math.abs(changes.time_saved_min)}<small> 分钟</small></strong></div></div><ul class="tradeoff"><li class="add"><span>新增</span><strong>${changes.added_stops.map(esc).join('、')||'没有'}</strong></li><li class="skip"><span>跳过</span><strong>${changes.skipped_stops.map(esc).join('、')||'没有'}</strong></li></ul>${(a.candidate?.stops||[]).filter(p=>p.category==='美食').map(p=>`<div class="suggestion-dining"><strong>${esc(p.name)}</strong>${commerceInfo(p)}</div>`).join('')}<div class="suggestion-actions"><button class="primary" data-confirm="true">接受调整</button><button class="secondary" data-confirm="false">保留原路线</button></div><p class="fineprint" title="${esc(a.decision_source)}">${a.expires_at?esc(new Date(a.expires_at).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'}))+' 前有效':'10 分钟内有效'}</p></section>`;
 }
 function journeyPage(){
-  if(!state.trip)return empty('先有方向，再慢慢出发','选一座城市，生成行程后就能开启途中伴行。');
-  if(!state.session||state.session.ended_at)return heading('ON THE WAY','准备好，就出发。','不需要心率设备，也有一路陪伴。')+`<section class="ready-journey"><p class="eyebrow">${esc(state.trip.preferences.city)} / DAY ${state.day}</p><h2>你的行程已准备好</h2><p>开始后，打卡记录每一站。<br>走累了，随时告诉慢行。</p><button class="primary" id="start-journey">开始第 ${state.day} 天漫游 ↗</button></section>`;
-  const s=state.session,d=state.trip.days[s.day-1],current=d.stops[s.current_index],paused=s.status==='paused';
-  return heading('ON THE WAY · '+esc(state.trip.preferences.city),'走走，停停，都很好。','有方向，也有随时调整的自由。',`<button class="text-button" id="end-journey">结束漫游 ↗</button>`)+`
-  <div class="journey-layout"><div class="journey-main"><section class="current-stop ${paused?'paused':''}"><div class="current-meta"><span>${paused?'行程已暂停':current?'当前一站':'今日行程已走完'}</span><span>已打卡 ${s.current_index} / ${d.stops.length}</span></div><h2>${paused?'先照顾好自己':current?esc(current.name):'把今天，留在手记里。'}</h2><p>${paused?'请停止游览，到安全位置并寻求身边人的帮助。':current?`${esc(current.arrival)} — ${esc(current.departure)} · 计划停留 ${current.duration_min} 分钟`:'今天的节点已全部打卡，可以结束漫游并查看记录。'}</p>${current&&!paused?commerceInfo(current):''}<div class="journey-progress" role="progressbar" aria-label="打卡进度" aria-valuemin="0" aria-valuemax="${d.stops.length}" aria-valuenow="${s.current_index}"><span style="width:${Math.min(100,s.current_index/Math.max(1,d.stops.length)*100)}%"></span></div>${current&&!paused?`<button class="primary" id="checkin">完成此站，继续下一站 <span aria-hidden="true">↗</span></button>`:''}</section>
-  ${current&&!paused?journalBlock(s.day,current):''}
+  if(!state.trip)return empty('还没有行程','先规划一段行程，再来这里边走边记录。');
+  if(!state.session||state.session.ended_at)return `<section class="ready"><img src="/lake.svg" alt=""><div class="ready-body"><p class="trip-meta">${esc(state.trip.preferences.city)} · 第 ${state.day} 天</p><h1>你的行程已准备好</h1><p>每到一站点一下打卡，累了、饿了随时说。</p><button class="primary big" id="start-journey">开始第 ${state.day} 天漫游 ${icon('arrow')}</button></div></section>`;
+  const s=state.session,d=state.trip.days[s.day-1],current=d.stops[s.current_index],paused=s.status==='paused',finished=!current&&!paused;
+  const previous=current?(s.current_index?d.stops[s.current_index-1]:state.trip.preferences.start_point):null,next=current?d.stops[s.current_index+1]:null;
+  return `<div class="journey-layout"><div class="journey-main"><section class="now ${paused?'paused':''}"><div class="now-top"><span class="now-label">${paused?'行程已暂停':current?`第 ${s.current_index+1} 站 · 共 ${d.stops.length} 站`:'全部打卡完成'}</span>${finished?'':'<button class="now-end" id="end-journey">结束漫游</button>'}</div><h1>${paused?'先照顾好自己':current?esc(current.name):'今天的行程走完了'}</h1><p class="now-meta">${paused?'停下来，到安全的地方，找身边的人帮忙。':current?`${esc(current.arrival)} — ${esc(current.departure)} · 停留 ${current.duration_min} 分钟`:'结束漫游，就能看到今天的手记。'}</p>${current&&!paused?commerceInfo(current):''}<div class="journey-progress" role="progressbar" aria-label="打卡进度" aria-valuemin="0" aria-valuemax="${d.stops.length}" aria-valuenow="${s.current_index}"><span style="width:${Math.min(100,s.current_index/Math.max(1,d.stops.length)*100)}%"></span></div>${current&&!paused?`<div class="now-actions"><button class="primary big" id="checkin">${icon('check')}逛完了，去下一站</button>${previous?`<a class="now-nav" href="${esc(amapNavigation(previous,current))}" target="_blank" rel="noopener noreferrer">${icon('nav')}导航</a>`:''}</div>${next?`<p class="now-next">下一站：${esc(next.name)}</p>`:''}`:''}${finished?`<button class="primary big" id="end-journey">结束并看手记 ${icon('arrow')}</button>`:''}</section>
   ${state.suggestion&&!paused?suggestionCard(state.suggestion):''}
-  <section class="feeling-panel"><div class="section-label"><span>现在，感觉怎么样？</span><span>随时说，不必等</span></div>${paused?'<p class="subtitle">普通路线建议已暂停。需要紧急帮助时，请联系当地急救服务。</p>':`<div class="feedback-grid"><button data-feedback="tired"><span class="feedback-icon" aria-hidden="true">⌁</span><strong>轻松一点</strong><small>调整节奏，找处歇脚</small><span class="feedback-arrow" aria-hidden="true">↗</span></button><button data-feedback="hungry"><span class="feedback-icon" aria-hidden="true">◡</span><strong>想吃饭了</strong><small>给下一程补充能量</small><span class="feedback-arrow" aria-hidden="true">↗</span></button></div><p class="fineprint">慢行会说明改线原因和取舍，由你决定是否接受。</p>`}<button class="text-button help-button" id="unwell">身体不适，需要帮助 ↗</button></section>
-  ${!paused?`<details class="demo-controls"><summary>试试动态调整 <span>比赛演示</span></summary><p class="fineprint">以下为模拟事件，不代表当前天气或身体状态。</p><div class="toolbar"><button class="secondary" data-feedback="rain">模拟下雨</button><button class="secondary" id="simulate-fatigue">模拟疲劳趋势</button></div></details>`:''}
-  </div><aside class="journey-aside"><section class="card sensor-card">${sensorCard()}<p class="fineprint">模型授权：${s.model_consent?'已开启':'未开启'}。蓝牙心率在本页读取；Apple Watch经单独授权后临时转发。仅派生特征会按模型授权参与判断。结束会话可撤回本次授权。阈值未经临床验证，不用于诊断。</p></section><section class="card preview-card"><div class="preview-top"><div class="card-head"><h2>今天的方向</h2>${badge('高德地图')}</div></div>${mapView(d.stops)}</section></aside></div>`;
+  <section class="feel"><h2>现在感觉怎么样？</h2>${paused?'<p class="muted">路线建议已暂停。需要急救请拨打 120。</p>':`<div class="feel-grid"><button data-feedback="tired"><span class="feel-emoji" aria-hidden="true">😮‍💨</span><strong>有点累</strong><small>少走一点，找地方歇歇</small></button><button data-feedback="hungry"><span class="feel-emoji" aria-hidden="true">🍜</span><strong>想吃饭</strong><small>就近安排一家餐厅</small></button></div>`}<button class="help-btn" id="unwell">身体不舒服，需要帮助</button></section>
+  ${current&&!paused?journalBlock(s.day,current):''}
+  ${!paused?`<div class="demo-row">${badge('演示用',true)}<button class="chip-btn" data-feedback="rain">模拟下雨</button><button class="chip-btn" id="simulate-fatigue">模拟疲劳</button></div>`:''}
+  </div><aside class="journey-aside"><section class="card sensor-card">${sensorCard()}</section><section class="card flush"><div class="card-head pad"><h2>地图</h2></div>${mapView(d.stops)}</section></aside></div>`;
 }
-async function reportPage(){if(!state.trip)return empty('把今天的风景，留在手记里','完成一次漫游后，这里会记录你的路线与每一次选择。');const r=await api(`/trip/${state.trip.id}/report`);return heading('MEMORIES, AT YOUR PACE','走过的路，都算数。',r.finished?'这段旅程已经结束，谢谢你和慢行一起出发。':'这是当前行程的即时记录，结束后将成为完整手记。',`<button class="secondary" id="export-report">↓ 导出手记</button>`)+stats([['已打卡地点',`${r.visited_stops} / ${r.total_stops}`,'来自手动打卡'],['步行估计',`${r.walked_km.toFixed(2)} km`,'仅已上报的步数推算'],['接受调整',`${r.accepted} 次`,'用户主动确认'],['保留原路线',`${r.rejected} 次`,'尊重你的每个选择']])+`<div class="layout"><section class="card report-hero"><p class="eyebrow">A DAY WELL SPENT</p><div class="report-title">风景值得停留，<br>你的感受也值得。</div><p>${esc(r.preference_note)}</p><p class="fineprint">规划距离 ${r.planned_distance_km.toFixed(1)} km 不等于实际步行。未采集的数据不作推断；未保存原始心率。</p></section><section class="card"><h2>旅程中的选择</h2><ul class="inline-list">${r.events.length?r.events.map(e=>`<li><span>${esc({tired:'想轻松一点',hungry:'希望用餐',rain:'天气变化演示',hr_high_sustained:'持续状态变化',accepted:'接受路线调整',rejected:'保留原路线',checkin:'完成节点打卡',unwell:'报告不适，暂停行程',progress:'进度延迟',state:'状态变化'}[e.type]||e.type)} ${e.demo?'· 演示':''}</span><small>${esc(new Date(e.at).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'}))}</small></li>`).join(''):'<li>还没有行程事件。开始漫游后会记录在这里。</li>'}</ul></section></div>`+summaryCard(r)+journalListMarkup(r.journal);}
+async function reportPage(){
+  if(!state.trip)return empty('还没有手记','走完一段行程，路线和每次选择都会记在这里。');
+  const r=await api(`/trip/${state.trip.id}/report`);
+  const names={tired:'说有点累',hungry:'说想吃饭',rain:'模拟下雨',hr_high_sustained:'身体状态变化',accepted:'接受路线调整',rejected:'保留原路线',checkin:'打卡',unwell:'身体不适，暂停行程',progress:'进度落后',state:'状态变化'};
+  return heading(esc(state.trip.preferences.city)+' · 手记',r.finished?'这一程已经走完。':'还在路上，结束后会更完整。',`<button class="chip-btn" id="export-report">${icon('download')}导出</button>`)
+  +stats([['打卡',`${r.visited_stops} / ${r.total_stops}`],['实际步行',`${r.walked_km.toFixed(2)} km`,`按步数估算 · 计划 ${r.planned_distance_km.toFixed(1)} km`],['接受调整',`${r.accepted} 次`],['保留原路线',`${r.rejected} 次`]])
+  +(r.preference_note?`<p class="report-note">${esc(r.preference_note)}</p>`:'')
+  +summaryCard(r)
+  +`<div class="layout even"><section class="card"><h2>途中发生了什么</h2><ul class="event-list">${r.events.length?r.events.map(e=>`<li class="event-${esc(e.type)}"><span>${esc(names[e.type]||e.type)}${e.demo?' · 演示':''}</span><time>${esc(new Date(e.at).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'}))}</time></li>`).join(''):'<li class="muted">还没有记录，开始漫游后会出现在这里。</li>'}</ul></section>${journalListMarkup(r.journal)}</div>`;
+}
 function providerTestCard(name,label){
   const result=state.providerTests?.[name],running=state.providerTesting===name;
   return `<article class="provider-test"><h3>${esc(label)}</h3><button type="button" class="secondary" data-provider-test="${name}" ${state.providerTesting?'disabled':''}>${running?'测试中…':name==='maps'?'测试地图':'测试天气'}</button><div role="status" aria-live="polite">${running?'<p class="fineprint">正在请求服务…</p>':result?`<p>${badge(result.ok?'测试成功':'测试失败',!result.ok)}${Number.isFinite(result.elapsed_ms)?` <small>${result.elapsed_ms} ms</small>`:''}</p><p class="fineprint">${esc(result.message)}${result.error_code?`（${esc(result.error_code)}）`:''}</p>${result.checked_at?`<p class="fineprint">测试时间：${esc(new Date(result.checked_at).toLocaleString('zh-CN'))}</p>`:''}`:'<p class="fineprint">尚未主动测试</p>'}</div>${name==='weather'?'<p class="fineprint"><a href="https://www.qweather.com/" target="_blank" rel="noopener noreferrer">天气数据：和风天气</a> · <a href="https://developer.qweather.com/attribution.html" target="_blank" rel="noopener noreferrer">数据来源声明</a></p>':''}</article>`;
@@ -622,8 +693,10 @@ async function testOpsProvider(name){
 async function opsPage(){
   if(state.user?.role!=='admin')throw Error('仅管理员可访问运营工作台');
   const o=await api('/ops');
-  return heading('SERVICE STATUS','服务运行状态。','查看地图、天气与模型服务的配置及最近调用结果。')+
-    `<section class="card"><h2>服务连接状态</h2><ul class="inline-list"><li>高德路径服务 ${badge(o.providers.maps?'已配置':'演示模式',!o.providers.maps)}</li><li>和风天气 ${badge(o.providers.weather?'已配置':'未配置',!o.providers.weather)}</li><li>DeepSeek 说明生成 ${badge(o.providers.deepseek?'已配置':'规则模板',!o.providers.deepseek)}</li><li>TypeSafe Jev 决策 ${badge(o.providers.jev?'已配置':'规则引擎',!o.providers.jev)}</li><li>地形高程 Open Topo Data ${badge(o.providers.elevation?'公开服务':'未启用',!o.providers.elevation)}</li></ul><ul class="inline-list">${Object.entries(o.provider_status||{}).map(([name,p])=>`<li>${esc({maps:'地图',weather:'天气',jev:'Jev',deepseek:'DeepSeek',elevation:'地形高程'}[name]||name)}<span>${esc({not_checked:'尚未联调',not_configured:'未配置',ok:'最近调用成功',error:'最近调用失败'}[p.status]||p.status)}${p.error_code?' · '+esc(p.error_code):''}</span></li>`).join('')}</ul><p class="fineprint">已配置不代表已验证服务可用。密钥只在服务器保存。Jev已适配TypeSafe官方接口，调用仍需本次会话授权。</p><p class="fineprint">主动测试使用杭州公共测试地点，检查高德步行路径与和风天气实况。</p><div class="provider-tests">${providerTestCard('maps','高德地图')}${providerTestCard('weather','和风天气')}</div></section>`;
+  const services=[['maps','高德地图',['已配置','演示模式']],['weather','和风天气',['已配置','未配置']],['deepseek','DeepSeek 说明生成',['已配置','规则模板']],['jev','TypeSafe Jev 决策',['已配置','规则引擎']],['elevation','Open Topo Data 高程',['公开服务','未启用']]];
+  const recent=p=>p?esc({not_checked:'还没调用过',not_configured:'未配置',ok:'最近调用成功',error:'最近调用失败'}[p.status]||p.status)+(p.error_code?' · '+esc(p.error_code):''):'';
+  return heading('运营工作台')+
+    `<section class="card"><h2>服务连接状态</h2><ul class="detail-list service-list">${services.map(([name,label,[on,off]])=>`<li><span>${label}</span><strong>${recent(o.provider_status?.[name])} ${badge(o.providers[name]?on:off,!o.providers[name])}</strong></li>`).join('')}</ul><div class="provider-tests">${providerTestCard('maps','高德地图')}${providerTestCard('weather','和风天气')}</div></section>`;
 }
 async function render(){if(state.page==='ops'&&state.user?.role!=='admin'){state.page=state.user?'plan':'auth';history.replaceState(null,'','#'+state.page);}updateAccountUI();destroyRouteMaps();const version=++renderVersion;
   // 伴行页需要日记，但渲染不能等它：先标记已请求，拿到数据后再刷新一次（每个行程只取一次）。
@@ -631,12 +704,12 @@ async function render(){if(state.page==='ops'&&state.user?.role!=='admin'){state
     state.journalTrip=state.trip.id;
     loadJournal().then(()=>{if(state.page==='journey')render();}).catch(()=>{});
   }
-  $('#app').dataset.page=state.page;$$('[data-page]').forEach(b=>{b.classList.toggle('active',b.dataset.page===state.page);if(b.dataset.page===state.page)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');});$('#page-name').textContent=labels[state.page];if(['ops','report'].includes(state.page))$('#app').innerHTML='<div class="loading">正在整理旅程数据…</div>';try{const html=await ({plan:planPage,trip:tripPage,journey:journeyPage,report:reportPage,ops:opsPage,auth:authPage}[state.page])();if(version!==renderVersion)return;$('#app').innerHTML=(state.offline?'<div class="notice">当前离线，仅可查看缓存行程；联网后才能生成、上报和确认调整。</div>':'')+html;updateSensors();mountRouteMaps(state.trip);}catch(e){if(version===renderVersion)$('#app').innerHTML=`<div class="empty"><h2>暂时没有加载成功</h2><p>${esc(e.message)}</p><button class="secondary" id="retry">重新加载</button></div>`;}}
+  $('#app').dataset.page=state.page;$$('[data-page]').forEach(b=>{b.classList.toggle('active',b.dataset.page===state.page);if(b.dataset.page===state.page)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');});document.title=`${labels[state.page]} · 慢行`;if(['ops','report'].includes(state.page))$('#app').innerHTML='<div class="loading">加载中…</div>';try{const html=await ({plan:planPage,trip:tripPage,journey:journeyPage,report:reportPage,ops:opsPage,auth:authPage}[state.page])();if(version!==renderVersion)return;$('#app').innerHTML=(state.offline?'<div class="notice">现在没有网络，只能查看已保存的行程。</div>':'')+html;updateSensors();mountRouteMaps(state.trip);if(state.page==='trip')loadWeatherLive();}catch(e){if(version===renderVersion)$('#app').innerHTML=`<div class="empty"><h2>没加载出来</h2><p>${esc(e.message)}</p><button class="secondary" id="retry">再试一次</button></div>`;}}
 function navigate(page){if(!labels[page])return;const menu=$('#more-menu');if(menu)menu.open=false;state.page=page;history.replaceState(null,'','#'+page);render();window.scrollTo({top:0});}
 function download(name,data){const url=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
 async function refreshSession(){if(!state.session)return;state.session=await api('/session/'+state.session.id);localStorage.setItem('mx-session',state.session.id);}
 async function feedback(trigger,demo=false){if(!state.session||state.session.ended_at)throw Error('请先开始漫游');const features=trigger==='hr_high_sustained'&&demo?{hr_vs_baseline_pct:30,duration_s:190,cadence_change_pct:-20}:sensors.features();const a=await api('/feedback',{session_id:state.session.id,feedback_type:trigger,features,demo});state.suggestion=a.require_confirm?a:null;await refreshSession();if(!a.require_confirm)toast(a.reason);await render();}
-function updateSensors(){updateWatchUI();const s=state.sensor;if(!$('#heart-value'))return;$('#heart-value').innerHTML=`${s.hr??'—'}<small>bpm</small>`;$('#cadence-value').innerHTML=`${s.cadence??'—'}<small>步/分</small>`;$('#sensor-status').textContent=s.source==='watch'?({background:'页面在后台 · 趋势判断已暂停',waiting:'等待手表输入配对码',waiting_for_sample:'手表已配对，等待新心率',unavailable:'连接暂不可用，等待恢复',disconnected:'手表已断开，请重新配对'}[s.watchStatus]||`Apple Watch · ${s.hr==null?'等待新心率':s.calibrating?'静坐采集中…':s.baseline?'参考基线 '+s.baseline+' bpm':'待采集静息参考基线'}`):s.connected?`已连接 · ${s.calibrating?'静坐采集中…':s.baseline?'参考基线 '+s.baseline+' bpm':'待采集静息参考基线'}`:'未连接设备 · 手动反馈模式';$('#sensor-extra').textContent=`估计步数 ${s.steps||0} · ${s.position?'定位精度约 '+Math.round(s.position.accuracy)+'m，地址识别结果见上方。':'定位未启用。'} ${s.source==='watch'?'手表心率经服务端临时转发，不落库、不交给模型。':'蓝牙原始心率不上传。'} 步频算法需实测校准。`;$('#calibrate').disabled=!s.connected||s.hr==null||s.calibrating;const motionButton=$('#motion');if(motionButton){motionButton.disabled=!!s.motionActive;motionButton.textContent=s.motionActive?'步频已开启':'启用步频';}const samples=sensors.samples.slice(-50);if(samples.length<2)$('#pulse-line').setAttribute('d','M0 30h350');if(samples.length>1){const min=Math.min(...samples.map(s=>s.value))-3,max=Math.max(...samples.map(s=>s.value))+3;$('#pulse-line').setAttribute('d',samples.map((s,i)=>`${i?'L':'M'}${i/(samples.length-1)*350},${45-(s.value-min)/(max-min)*35}`).join(' '));}}
+function updateSensors(){updateWatchUI();const s=state.sensor;if(!$('#heart-value'))return;$('#heart-value').innerHTML=`${s.hr??'--'}<small>bpm</small>`;$('#cadence-value').innerHTML=`${s.cadence??'--'}<small>步/分</small>`;$('#sensor-status').textContent=s.source==='watch'?({background:'页面在后台，暂停判断',waiting:'等手表输入配对码',waiting_for_sample:'手表已配对，等心率数据',unavailable:'暂时连不上，等待恢复',disconnected:'手表已断开，请重新配对'}[s.watchStatus]||`Apple Watch · ${s.hr==null?'等心率数据':s.calibrating?'静坐采集中…':s.baseline?'静息心率 '+s.baseline+' bpm':'还没采集静息心率'}`):s.connected?`已连接 · ${s.calibrating?'静坐采集中…':s.baseline?'静息心率 '+s.baseline+' bpm':'还没采集静息心率'}`:'未连接设备';$('#sensor-extra').textContent=s.steps?`已走约 ${s.steps} 步`:'';$('#calibrate').disabled=!s.connected||s.hr==null||s.calibrating;const motionButton=$('#motion');if(motionButton){motionButton.disabled=!!s.motionActive;motionButton.textContent=s.motionActive?'步频已开启':'开启步频';}const samples=sensors.samples.slice(-50);if(samples.length<2)$('#pulse-line').setAttribute('d','M0 30h350');if(samples.length>1){const min=Math.min(...samples.map(s=>s.value))-3,max=Math.max(...samples.map(s=>s.value))+3;$('#pulse-line').setAttribute('d',samples.map((s,i)=>`${i?'L':'M'}${i/(samples.length-1)*350},${45-(s.value-min)/(max-min)*35}`).join(' '));}}
 sensors.addEventListener('change',e=>{state.sensor=e.detail;if(!state.watchPending&&!e.detail.source)state.watchPairing=null;updateSensors();if(e.detail.message)toast(e.detail.message);const f=sensors.features();if(state.session&&!state.session.ended_at&&state.session.status!=='paused'&&f.duration_s>=180&&f.cadence_change_pct<=-15&&Date.now()-lastStateAt>300000){lastStateAt=Date.now();feedback('hr_high_sustained').catch(e=>toast(e.message));}});
 // 步频默认开启：开始漫游时就申请运动权限。iOS 要求 requestPermission 必须发生在
 // 用户手势里，所以调用点放在点击处理的最前面（任何 await 之前），否则手势上下文会丢失。
@@ -677,7 +750,7 @@ $('#app').addEventListener('submit',async e=>{
     // 起终点已经写进这次的行程偏好，表单里的一次性选择用完即清，避免下次误用。
     state.planStartPoint=null;state.planEndPoint=null;
     state.planPending=false;
-    if(state.page==='plan')navigate('trip');else{await render();if(revision===accountRevision)toast('行程已生成，前往「行程」查看。');}
+    if(state.page==='plan')navigate('trip');else{await render();if(revision===accountRevision)toast('行程已生成，去「行程」看看。');}
     // History is optional: the new trip and visible controls are already usable.
     try{const history=await api('/trips');if(revision===accountRevision&&state.trip?.id===trip.id)state.trips=history.trips;}catch{}
   }catch(err){if(revision!==accountRevision)return;state.planError=err.message;state.planPending=false;if(state.page==='plan')await render();else toast(err.message);}
@@ -721,15 +794,15 @@ document.addEventListener('click',async e=>{
     const list=mustVisitList(),at=list.findIndex(m=>m.name===stop.name);
     if(at>=0)list.splice(at,1);
     else{if(list.length>=3)return toast('最多锁定 3 个必去地点');list.push({name:stop.name,lat:stop.lat,lng:stop.lng,category:stop.category,duration_min:stop.duration_min});}
-    render();repaintStopDetail();toast(at>=0?`已取消「${stop.name}」的必去标记`:`已锁定「${stop.name}」，点上方按钮重新规划`);return;
+    render();repaintStopDetail();toast(at>=0?`已取消「${stop.name}」的必去`:`已把「${stop.name}」设为必去，点上方「按必去重新规划」生效`);return;
   }
   if(b.id==='replan-must'){
     const list=mustVisitList();if(!list.length)return;const p=state.trip.preferences;
-    b.disabled=true;b.textContent='正在按必去重新规划…';
+    b.disabled=true;b.textContent='正在重新规划…';
     try{
       state.trip=await api('/trip/plan',{city:p.city,date:p.date,days:p.days,budget:p.budget,walk_limit_km:p.walk_limit_km,interests:p.interests,start_time:p.start_time,end_time:p.end_time,companion:p.companion,model_consent:p.model_consent,start_poi:'auto',start_point:p.start_point||undefined,end_point:p.end_point||undefined,must_visit:list});
       state.trips=(await api('/trips')).trips;state.mustVisit=null;state.day=1;state.session=null;state.suggestion=null;cacheTrip();await render();toast('已按必去地点重新规划。');
-    }catch(err){b.disabled=false;b.textContent='✦ 按必去重新规划';toast(err.message);}
+    }catch(err){b.disabled=false;b.textContent='按必去重新规划';toast(err.message);}
     return;
   }
   const id=b.id;b.disabled=true;
@@ -754,7 +827,7 @@ document.addEventListener('click',async e=>{
     if(b.dataset.trip){state.trip=await api('/trip/'+b.dataset.trip);state.mustVisit=null;state.day=1;state.session=null;state.suggestion=null;localStorage.removeItem('mx-session');sensors.stop();cacheTrip();navigate('trip');}
     if(id==='start-journey'){
       if(state.session&&!state.session.ended_at){navigate('journey');return;}
-      modal(`<h2>开始你的第 ${state.day} 天漫游</h2><p>设备和定位均可跳过。蓝牙心率在本页处理；Apple Watch需另行授权临时转发。触发事件时，将相对变化和持续时间发送到本项目后端，服务端不保存这些健康特征。</p><label class="check-row"><input id="health-model-consent" type="checkbox"><span>可选：允许将心率相对基线变化、步频变化和持续时间发送至配置的TypeSafe Jev服务，辅助状态判断。不同意时仅使用规则引擎。</span></label><div class="modal-actions"><button class="primary" id="confirm-start">同意端侧处理与必要上报，开始</button><button class="secondary modal-close">暂不开始</button></div>`);
+      modal(`<h2>开始第 ${state.day} 天漫游</h2><p>不连手表或心率带也能走。连了设备的话，心率和步频的变化幅度会发给慢行后端，用来判断要不要提醒你歇一歇，不会保存。</p><label class="switch-row"><span class="switch-copy"><strong>让 AI 帮忙判断身体状态</strong><small>会把心率、步频的变化幅度和持续时间发给 TypeSafe Jev。关着就用内置规则判断。</small></span><input id="health-model-consent" type="checkbox" class="switch"></label><div class="modal-actions"><button class="primary" id="confirm-start">同意并开始</button><button class="secondary modal-close">再等等</button></div>`);
     }
     if(id==='confirm-start'){
       // iOS 要求运动权限在用户手势里申请，所以先发起（不 await），再开始会话。
@@ -766,37 +839,37 @@ document.addEventListener('click',async e=>{
     }
     if(b.dataset.feedback)await feedback(b.dataset.feedback,b.dataset.feedback==='rain');
     if(id==='simulate-fatigue')await feedback('hr_high_sustained',true);
-    if(id==='unwell'){modal('<h2>先照顾好自己</h2><p>如果您感到胸痛、眩晕或明显不适，请停止游览，到安全位置并向身边的人寻求帮助。需要紧急帮助时可联系当地急救服务。</p><div class="modal-actions"><button class="danger" id="pause-unwell">暂停行程</button><a class="primary" href="tel:120">拨打120（中国大陆）</a></div>');}
+    if(id==='unwell'){modal('<h2>先照顾好自己</h2><p>胸痛、头晕或明显不舒服时，请马上停下，到安全的地方，找身边的人帮忙。</p><div class="modal-actions"><a class="primary" href="tel:120">拨打 120</a><button class="danger" id="pause-unwell">暂停行程</button></div>');}
     if(id==='pause-unwell'){await feedback('unwell');sensors.stop();closeModal();}
     if(b.dataset.confirm){const r=await api('/session/confirm',{session_id:state.session.id,suggestion_id:state.suggestion.id,accept:b.dataset.confirm==='true'});state.trip=r.trip;state.session=r.session;state.suggestion=null;cacheTrip();toast(r.accepted?'已按你的选择更新行程。':'已保留原路线。');await render();}
     if(id==='checkin'){state.session=await api('/session/checkin',{session_id:state.session.id,stop_id:state.trip.days[state.session.day-1].stops[state.session.current_index].id});state.suggestion=null;toast('已记录打卡');await render();}
-    if(id==='end-journey')modal('<h2>把今天，留在手记里？</h2><p>结束后将停止本次设备采集，保留已打卡地点与路线调整记录。</p><div class="modal-actions"><button class="primary" id="confirm-end">结束并生成手记</button><button class="secondary modal-close">继续漫游</button></div>');
+    if(id==='end-journey')modal('<h2>结束今天的漫游？</h2><p>设备会停止采集，打卡和路线调整都会留在手记里。</p><div class="modal-actions"><button class="primary" id="confirm-end">结束，看手记</button><button class="secondary modal-close">继续走</button></div>');
     if(id==='confirm-end'){closeModal();state.session=await api('/session/end',{session_id:state.session.id});sensors.stop();state.suggestion=null;navigate('report');}
     if(id==='connect-watch'||id==='watch-retry'){
       if(!state.session||state.session.ended_at)throw Error('请先开始漫游');
       if(state.session.status==='paused')throw Error('行程已暂停，请先照顾自己');
       if(id==='connect-watch'&&state.watchPairing?.session_id===state.session.id&&!watchConnectionView().retry){showWatchPairing();return;}
-      modal('<p class="eyebrow">OPTIONAL COMPANION</p><h2>连接 Apple Watch</h2><ol class="watch-steps"><li><strong>安装手表配套应用</strong><span>需要已安装的慢行 watchOS 应用，网页不能直接读取 Apple Health。</span></li><li><strong>输入地址与一次性配对码</strong><span>手机与手表需能访问同一 HTTPS 服务，且信任其证书。</span></li><li><strong>允许读取，等待实时心率</strong><span>保持网页前台；没有读数时仍可手动反馈。</span></li></ol><details class="watch-privacy"><summary>本次会传输什么数据？</summary><p>心率数值和采样时间经 HTTPS 发到本项目服务端，内存只保留最新一条，20秒后清除，不落库、不写日志、不将原始读数交给模型。配对码5分钟有效、仅限一次；连接最长4小时。结束漫游或退出账号即失效。</p></details><label class="check-row"><input id="watch-relay-consent" type="checkbox"><span>同意本次心率临时转发</span></label><p id="watch-error" class="error-inline" role="alert"></p><div class="modal-actions"><button class="primary" id="confirm-watch">生成配对码</button><button class="secondary modal-close">暂不连接</button></div>');
+      modal('<h2>连接 Apple Watch</h2><ol class="watch-steps"><li><strong>手表上装好慢行应用</strong><span>网页读不到 Apple 健康数据，要靠手表应用转发。</span></li><li><strong>在手表上输入地址和配对码</strong><span>手表要能访问这个 HTTPS 地址。</span></li><li><strong>允许读取心率</strong><span>网页保持在前台，等读数出现。</span></li></ol><details class="watch-privacy"><summary>会传什么数据？</summary><p>只传心率数值和采样时间。服务端只在内存里留最新一条，20 秒后清掉，不存库、不写日志、不给模型。配对码 5 分钟内有效、只能用一次，连接最长 4 小时，结束漫游或退出账号就失效。</p></details><label class="check-row"><input id="watch-relay-consent" type="checkbox"><span>同意本次心率临时转发</span></label><p id="watch-error" class="error-inline" role="alert"></p><div class="modal-actions"><button class="primary" id="confirm-watch">生成配对码</button><button class="secondary modal-close">暂不连接</button></div>');
     }
     if(id==='confirm-watch')await createWatchPairing();
     if(id==='view-watch')showWatchPairing();
-    if(id==='cancel-watch'){watchAttempt++;state.watchPending=false;state.watchPairing=null;sensors.disconnect();closeModal();updateWatchUI();toast('设备已断开，可以继续手动反馈。');}
+    if(id==='cancel-watch'){watchAttempt++;state.watchPending=false;state.watchPairing=null;sensors.disconnect();closeModal();updateWatchUI();toast('设备已断开');}
     if(id==='connect-hr')await sensors.connect();
     if(id==='calibrate')sensors.calibrate();
     if(id==='motion')await sensors.startMotion();
     if(id==='locate'||id==='locate-plan')await recognizeLocation();
     if(id==='stop-sensors'){clearLocation();sensors.stop();}
-    if(id==='privacy-button'||id==='privacy-mobile')modal('<h2>你的旅程，你的数据。</h2><p>登录后行程按账号隔离，游客行程使用匿名浏览器Cookie隔离；注册或登录会将本浏览器的游客行程关联到账号。服务端保存行程、打卡、建议选择，以及你自己写的日记与照片（照片按你压缩后的原样保存，只用于在页面里显示）；原始心率、加速度和定位不持久化。Apple Watch经单独授权后将心率和时间发送到本项目服务端，内存仅保留最新一条、20秒后清除，不写日志、不交给模型。</p><p>蓝牙和运动权限在点击相关按钮后申请；开始漫游时会自动尝试开启步频，失败可手动重试。页面打开自动请求一次定位权限，允许后将本次坐标发送给高德转换坐标并识别地址；本项目不落库、不缓存定位，不将定位发送给模型。模型默认关闭；授权开启后才会发送明确说明的必要数据，日记内容与照片始终不发送给模型。可随时停止传感器，或结束会话撤回本次模型使用。</p><p>浏览器会缓存最近一份行程供离线查看。服务器数据暂不自动过期，可使用下方按钮删除当前账号（或游客身份）的行程记录；日记与照片会一并删除。账号本身不会删除。</p><div class="modal-actions"><button class="secondary" id="privacy-stop">停止采集</button><button class="danger" id="delete-data">删除我的行程与记录</button></div>');
-    if(id==='privacy-stop'){clearLocation();sensors.stop();toast('采集已停止');}
-    if(id==='delete-data')modal('<h2>确认删除本浏览器的数据？</h2><p>将删除所有行程、会话、建议、日记与照片，以及本地缓存。删除后不能恢复。</p><div class="modal-actions"><button class="danger" id="confirm-delete">确认删除</button><button class="secondary modal-close">取消</button></div>');
-    if(id==='confirm-delete'){await api('/privacy/delete',{confirm:true});clearLocation();sensors.stop();state.trip=null;state.session=null;state.suggestion=null;state.trips=[];localStorage.removeItem('mx-trip');localStorage.removeItem('mx-session');localStorage.removeItem('mx-plan-draft');state.draft=readDraft();applyDestination(state.draft.province,state.draft.city,state.draft.district_adcode,state.draft.district);state.interests=state.draft.interests;state.planConsent=false;closeModal();navigate('plan');toast('本浏览器的记录已删除');}
+    if(id==='privacy-button')modal('<h2>隐私与数据</h2><h3>会保存</h3><ul class="plain-list"><li>行程、打卡、你对路线调整的选择</li><li>你写的日记和照片</li><li>浏览器里缓存的最近一份行程（断网时查看）</li></ul><h3>不保存</h3><ul class="plain-list"><li>心率、加速度原始数据</li><li>定位坐标（只发给高德识别城市，用完即弃）</li><li>Apple Watch 心率：只在内存留最新一条，20 秒后清掉</li></ul><h3>关于 AI</h3><ul class="plain-list"><li>默认关闭，打开开关后才发送对应内容</li><li>日记、照片和定位任何时候都不发给模型</li></ul><h3>账号</h3><ul class="plain-list"><li>登录后行程跟着账号走；没登录时跟着这个浏览器走</li><li>注册或登录时，这个浏览器里的游客行程会并入账号</li></ul><div class="modal-actions"><button class="secondary" id="privacy-stop">停止定位和传感器</button><button class="danger" id="delete-data">删除我的行程与记录</button></div>');
+    if(id==='privacy-stop'){clearLocation();sensors.stop();toast('已停止定位和传感器');}
+    if(id==='delete-data')modal('<h2>确定全部删除？</h2><p>行程、打卡、日记和照片都会删掉，无法恢复。账号本身会保留。</p><div class="modal-actions"><button class="danger" id="confirm-delete">全部删除</button><button class="secondary modal-close">取消</button></div>');
+    if(id==='confirm-delete'){await api('/privacy/delete',{confirm:true});clearLocation();sensors.stop();state.trip=null;state.session=null;state.suggestion=null;state.trips=[];localStorage.removeItem('mx-trip');localStorage.removeItem('mx-session');localStorage.removeItem('mx-plan-draft');state.draft=readDraft();applyDestination(state.draft.province,state.draft.city,state.draft.district_adcode,state.draft.district);state.interests=state.draft.interests;state.planConsent=false;closeModal();navigate('plan');toast('已全部删除');}
   }catch(err){toast(err.message);}finally{b.disabled=false;if(id==='calibrate')updateSensors();}
 });
-window.addEventListener('offline',()=>{state.offline=true;toast('网络已断开，缓存行程仍可查看。');});
+window.addEventListener('offline',()=>{state.offline=true;toast('网络断了，已保存的行程还能看。');});
 window.addEventListener('online',()=>{state.offline=false;toast('网络已恢复');render();});
 async function init(){
-  try{state.user=(await api('/auth/me')).user;state.authChecked=true;updateAccountUI();state.config=await api('/config');state.pois=(await api('/pois')).pois;state.trips=(await api('/trips')).trips;const cached=JSON.parse(localStorage.getItem('mx-trip')||'null');state.trip=state.trips.find(t=>t.id===cached?.id)||state.trips[0]||null;if(state.trip)cacheTrip();const sid=localStorage.getItem('mx-session');if(sid){try{state.session=await api('/session/'+sid);if(state.session.trip_id!==state.trip?.id)state.session=null;else if(state.session.pending_suggestion){try{const pending=await api('/suggestion/'+state.session.pending_suggestion);if(!pending.resolved_at&&Date.parse(pending.expires_at)>Date.now())state.suggestion=pending;}catch{}}}catch{localStorage.removeItem('mx-session');}}$('#mode-pill').textContent=state.config.data_mode==='demo'?'演示体验':'实况规划';}
-  catch{state.offline=true;try{state.trip=state.authChecked&&localStorage.getItem('mx-trip-owner')===(state.user?.id||'guest')?JSON.parse(localStorage.getItem('mx-trip')||'null'):null;}catch{}toast('服务连接失败，当前可查看已缓存行程。');}
+  try{state.user=(await api('/auth/me')).user;state.authChecked=true;updateAccountUI();state.config=await api('/config');state.pois=(await api('/pois')).pois;state.trips=(await api('/trips')).trips;const cached=JSON.parse(localStorage.getItem('mx-trip')||'null');state.trip=state.trips.find(t=>t.id===cached?.id)||state.trips[0]||null;if(state.trip)cacheTrip();const sid=localStorage.getItem('mx-session');if(sid){try{state.session=await api('/session/'+sid);if(state.session.trip_id!==state.trip?.id)state.session=null;else if(state.session.pending_suggestion){try{const pending=await api('/suggestion/'+state.session.pending_suggestion);if(!pending.resolved_at&&Date.parse(pending.expires_at)>Date.now())state.suggestion=pending;}catch{}}}catch{localStorage.removeItem('mx-session');}}paintMode();}
+  catch{state.offline=true;try{state.trip=state.authChecked&&localStorage.getItem('mx-trip-owner')===(state.user?.id||'guest')?JSON.parse(localStorage.getItem('mx-trip')||'null'):null;}catch{}toast('连不上服务，先看看已保存的行程。');}
   // 已经有进行中的漫游时，尽量把步频也恢复起来（iOS 可能因为没有用户手势而失败）。
   if(state.session&&!state.session.ended_at){startMotionByDefault();await loadJournal();}
   const page=location.hash.slice(1);state.page=labels[page]?page:'plan';await render();
