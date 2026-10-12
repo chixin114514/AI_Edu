@@ -1,25 +1,25 @@
 import http from 'node:http';
 import https from 'node:https';
 import { loadTls } from './tls.js';
-import { randomUUID, randomBytes, timingSafeEqual } from 'node:crypto';
+import { randomUUID, randomBytes } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { resolve, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createStore } from './store.js';
+import { createAuth } from './auth.js';
 import { routeMap } from './maps.js';
 import { pois, byId } from './pois.js';
 import { createPlan, evaluate, ensure, HttpError, clock, minutes, schedule, approximateDistance } from './planner.js';
 import { decision, liveMode, providerFlags, providerStatus, resolveLocation, cityOptions, regionOptions } from './providers.js';
 const root=fileURLToPath(new URL('../public/',import.meta.url));
 const mime={'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8','.svg':'image/svg+xml','.json':'application/json'};
-const safeEqual=(a,b)=>{const x=Buffer.from(a),y=Buffer.from(b);return x.length===y.length&&timingSafeEqual(x,y);};
 async function body(req){
   ensure((req.headers['content-type']||'').startsWith('application/json'),'仅接受JSON请求',415);
   let s='';for await(const c of req){s+=c;ensure(Buffer.byteLength(s)<=32768,'请求过大',413);}
   try{const b=JSON.parse(s);ensure(b&&typeof b==='object'&&!Array.isArray(b),'请求须为对象');return b;}catch(e){if(e instanceof HttpError)throw e;throw new HttpError(400,'JSON格式错误');}
 }
 export function createApp({database=process.env.DATABASE_PATH||'./data/manxing.sqlite',tls}={}){
-  const store=createStore(database), limits=new Map();
+  const store=createStore(database), auth=createAuth(store),limits=new Map();
   const locks=new Set();
   const handler=async(req,res)=>{
     res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Referrer-Policy','no-referrer');
@@ -36,8 +36,11 @@ export function createApp({database=process.env.DATABASE_PATH||'./data/manxing.s
         try{const content=await readFile(file);res.writeHead(200,{'Content-Type':mime[extname(file)],'Cache-Control':'no-cache'});res.end(req.method==='HEAD'?undefined:content);}catch{throw new HttpError(404,'页面不存在');}return;
       }
       const cookies=req.headers.cookie||'';
-      let owner=cookies.match(/(?:^|;\s*)mx_owner=([a-f0-9]{48})(?:;|$)/)?.[1];
-      if(!owner){owner=randomBytes(24).toString('hex');res.setHeader('Set-Cookie',`mx_owner=${owner}; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000${req.socket.encrypted||process.env.COOKIE_SECURE==='true'?'; Secure':''}`);}
+      const secure=Boolean(req.socket.encrypted||process.env.COOKIE_SECURE==='true'),outCookies=[];
+      const setCookie=value=>{outCookies.push(value);res.setHeader('Set-Cookie',outCookies.length===1?value:outCookies);};
+      const guestCookie=value=>`mx_owner=${value}; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000${secure?'; Secure':''}`;
+      let guest=cookies.match(/(?:^|;\s*)mx_owner=([a-f0-9]{48})(?:;|$)/)?.[1];
+      if(!guest){guest=randomBytes(24).toString('hex');setCookie(guestCookie(guest));}
       if(req.method!=='GET'){
         const origin=req.headers.origin;
         ensure(!origin||(new URL(origin).host===req.headers.host&&(!req.socket.encrypted||new URL(origin).protocol==='https:')),'跨站请求已拒绝',403);
@@ -46,6 +49,16 @@ export function createApp({database=process.env.DATABASE_PATH||'./data/manxing.s
         if(limits.size>10000)limits.clear();
       }
       const b=req.method==='POST'?await body(req):{};
+      const user=auth.current(cookies),owner=user?'user:'+user.id:guest;
+      if(path==='/api/auth/me'&&req.method==='GET')return send({user});
+      if(['/api/auth/register','/api/auth/login'].includes(path)&&req.method==='POST'){
+        const result=await auth.authenticate(b,{register:path.endsWith('/register'),ip:req.socket.remoteAddress,cookies,guest,secure});
+        setCookie(result.cookie);return send({user:result.user},path.endsWith('/register')?201:200);
+      }
+      if(path==='/api/auth/logout'&&req.method==='POST'){
+        setCookie(auth.logout(cookies,secure));setCookie(guestCookie(randomBytes(24).toString('hex')));return send({user:null});
+      }
+      if(path==='/api/ops'||path.startsWith('/api/ops/')){ensure(user,'请先登录管理员账号',401);ensure(user.role==='admin','仅管理员可访问运营工作台',403);}
       const get=(kind,id)=>{ensure(typeof id==='string','缺少标识');const v=store.get(kind,id,owner);ensure(v,'记录不存在',404);return v;};
       const session=()=>{const s=get('session',b.session_id);ensure(!s.ended_at,'行程已结束',409);return s;};
       const put=(kind,v)=>store.put(kind,v,owner);
@@ -169,8 +182,6 @@ export function createApp({database=process.env.DATABASE_PATH||'./data/manxing.s
       }
       if(path==='/api/ops'&&req.method==='GET')return send({poi_count:pois.length,unverified:pois.filter(p=>!p.verified).length,my_feedback:store.list('session',owner).flatMap(s=>s.events).reduce((a,e)=>(a[e.type]=(a[e.type]||0)+1,a),{}),jobs:store.list('job',owner).reverse().slice(0,10),providers:providerFlags(),provider_status:providerStatus()});
       if(path==='/api/ops/run'&&req.method==='POST'){
-        const configured=process.env.ADMIN_TOKEN||'', supplied=req.headers.authorization?.replace(/^Bearer /,'')||'';
-        ensure(configured.length>=16&&safeEqual(configured,supplied),'运营操作需要配置至少16位的 ADMIN_TOKEN 并登录',403);
         ensure(['poi_audit','feedback'].includes(b.job),'任务类型无效');
         const output=b.job==='poi_audit'?{summary:'已完成样本字段完整性检查。未抓取官方页面；以下记录仍需人工核验。',items:pois.map(p=>({name:p.name,result:!p.verified?'待核验':'已核验',source:p.source_url,missing:['name','source_url','updated_at','open','close'].filter(k=>!p[k])}))}:{summary:'当前浏览器反馈的规则聚类（未调用模型）',items:Object.entries(store.list('session',owner).flatMap(s=>s.events).reduce((a,e)=>(a[e.type]=(a[e.type]||0)+1,a),{})).map(([type,count])=>({type,count}))};
         return send(put('job',{id:randomUUID(),job:b.job,at:new Date().toISOString(),output}));

@@ -1,16 +1,20 @@
 # 前后端接口契约
 
-所有接口在 `/api` 下，同源访问。POST必须发送 `Content-Type: application/json`。匿名身份使用服务器签发的随机 `mx_owner` HttpOnly Cookie；客户端需要保留Cookie。JSON最大32KB。错误格式为 `{"error":"说明"}`。
+所有接口在 `/api` 下，同源访问。POST必须发送 `Content-Type: application/json`。登录身份使用 `mx_auth` HttpOnly Cookie；游客使用服务器签发的随机 `mx_owner` HttpOnly Cookie。客户端需要保留 Cookie。JSON最大32KB。错误格式为 `{"error":"说明"}`。
 
-状态码：400参数错误、403无权访问、404不存在／不属于当前身份、409状态冲突、413请求太大、415内容类型不支持、429请求频繁、503外部路线服务不可用。
+状态码：400参数错误、401未登录或凭据错误、403无权访问、404不存在／不属于当前身份、409状态冲突、413请求太大、415内容类型不支持、429请求频繁、503外部路线服务不可用。
 
 | 方法 | 路径 | 用途 |
 | --- | --- | --- |
+| GET | `/auth/me` | 当前账号，未登录返回 user:null |
+| POST | `/auth/register` | 注册普通用户并登录 |
+| POST | `/auth/login` | 登录账号 |
+| POST | `/auth/logout` | 撤销当前登录会话并退出 |
 | GET | `/config` | 数据模式、服务配置状态和隐私说明 |
 | GET | `/pois` | 演示POI列表 |
 | POST | `/location/resolve` | 坐标转换、识别地址并推荐试点起点（不保存定位） |
-| GET | `/trips` | 当前浏览器的行程 |
-| GET | `/route-packs` | 当前浏览器按城市去重的最新自动路线包摘要 |
+| GET | `/trips` | 当前账号或游客身份的行程 |
+| GET | `/route-packs` | 当前账号或游客身份按城市去重的最新自动路线包摘要 |
 | POST | `/trip/plan` | 编排行程并保存 |
 | GET | `/trip/{id}` | 读取本人行程 |
 | POST | `/session/start` | 开启指定旅行日的会话 |
@@ -22,8 +26,8 @@
 | POST | `/session/checkin` | 完成当前节点打卡 |
 | POST | `/session/end` | 结束会话，重复结束保持原时间 |
 | GET | `/trip/{id}/report` | 行程报告 |
-| GET | `/ops` | POI统计、本人反馈及任务记录 |
-| POST | `/ops/run` | 运行字段审查或反馈聚类 |
+| GET | `/ops` | 仅管理员：POI统计、本人反馈及任务记录 |
+| POST | `/ops/run` | 仅管理员：运行字段审查或反馈聚类 |
 | POST | `/privacy/delete` | 删除当前身份的所有记录 |
 
 ## 生成行程
@@ -103,7 +107,7 @@ DeepSeek仍只生成获授权的非健康行程说明，不自动接收低置信
 
 ## 运营权限
 
-`/ops/run` 请求 `{"job":"poi_audit"}` 或 `{"job":"feedback"}`，必须带 `Authorization: Bearer <ADMIN_TOKEN>`。服务器令牌至少16位。当前反馈聚类仅针对该浏览器，避免演示阶段公开全量用户行为。两个任务均为确定性程序，输出明确标记为字段检查／规则聚类，不伪装模型或官网验证结果。
+`/ops` 和 `/ops/run` 均要求有效登录会话且服务端账号角色为 `admin`。未登录返回401、普通用户返回403；不再接受旧 `ADMIN_TOKEN` 作为访问凭据。`/ops/run` 请求 `{"job":"poi_audit"}` 或 `{"job":"feedback"}`，当前反馈聚类针对管理员本人账号。两个任务均为确定性程序，输出明确标记为字段检查／规则聚类，不伪装模型或官网验证结果。
 
 ## 自动识别位置
 
@@ -133,7 +137,7 @@ DeepSeek仍只生成获授权的非健康行程说明，不自动接收低置信
 
 ### 行程地图
 
-`GET /api/trip/{id}/map?day=1&zoom=14&focus=0`：限当前浏览器拥有的行程；默认 `day=1`，省略 `zoom` / `focus` 时自动显示全程。平移可传 `lng` 和 `lat`（GCJ-02，经度 ±180、纬度 ±85，必须成对且不能与 `focus` 同时使用）。返回 `{image, view: {center, zoom, width, height}, source}`，image 为后端取得的高德底图 data URL。参数错误 400、非本人行程 404、超过每分钟 60 次 429、底图不可用 503。
+`GET /api/trip/{id}/map?day=1&zoom=14&focus=0`：限当前账号或游客身份拥有的行程；默认 `day=1`，省略 `zoom` / `focus` 时自动显示全程。平移可传 `lng` 和 `lat`（GCJ-02，经度 ±180、纬度 ±85，必须成对且不能与 `focus` 同时使用）。返回 `{image, view: {center, zoom, width, height}, source}`，image 为后端取得的高德底图 data URL。参数错误 400、非本人行程 404、超过每分钟 60 次 429、底图不可用 503。
 
 ### 城市下拉选项
 
@@ -144,3 +148,15 @@ DeepSeek仍只生成获授权的非健康行程说明，不自动接收低置信
 `GET /api/regions` 返回 `{provinces: [{name, adcode, cities: [{name, adcode, districts: [{name, adcode}]}]}], source}`。
 
 `POST /api/trip/plan` 可增加 `province`（省份名称）和 `district_adcode`（六位区县代码，空字符串或省略为全市范围）；省市区不匹配返回 422，字段格式错误返回 400。成功行程的 preferences 中包含已校验的区县名称 `district`，route_pack 中 `adcode` 为所选区县或全市代码，`city_adcode` 为所属城市代码。演示模式仅支持杭州全市样本。
+
+
+## 注册与登录
+
+- `POST /auth/register` / `POST /auth/login`：`{"username":"traveler","password":"your-password"}`；成功返回 `{user:{id,username,role}}` 并设置登录 Cookie。注册返回201，登录返回200。
+- 用户名3—32位字母、数字或下划线，去首尾空格并转小写；新注册密码8—128位。注册角色固定为 `user`，忽略客户端角色字段；用户名重复返回409。登录错误统一返回401，不区分用户不存在和密码错误。
+- 首次初始化生成 `admin / admin`，管理员角色为 `admin`，已有账号不会在重启时覆盖。
+- 密码使用随机盐和 scrypt 哈希。登录 Cookie 的随机凭据在数据库仅保存 SHA-256 摘要，有效期7天；Cookie 为 HttpOnly、SameSite=Strict，HTTPS 下自动附带 Secure。
+- 注册与登录合计每个来源IP每15分钟最多20次；超限返回429。浏览器跨站 Origin 被拒绝。
+- 登录或注册会将该浏览器的游客记录关联到账号；各账号的数据相互隔离，管理员运营权限不提供读取其他账号行程的捷径。
+- `POST /auth/logout`（`{}`）撤销当前会话，刷新游客身份。`GET /auth/me` 返回 `{user:null}` 表示未登录或会话已过期。其他设备的登录会话不受退出影响。
+- `/privacy/delete` 删除当前账号或游客的行程记录，不删除账号与密码。

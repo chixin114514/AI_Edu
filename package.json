@@ -10,8 +10,8 @@
   "scripts": {
     "start": "node --use-env-proxy --env-file-if-exists=.env server/index.js",
     "dev": "node --use-env-proxy --env-file-if-exists=.env --watch server/index.js",
-    "test": "node test/core.test.js && node test/ui-smoke.js && node test/providers.test.js && node test/location.test.js && node test/dynamic.test.js && node test/maps.test.js && node test/https.test.js",
-    "check": "node --check server/index.js && node --check public/app.js && node --check public/sensors.js && node --check server/providers.js && node --check scripts/mcp-server.js && node --check scripts/check-providers.js && node --check scripts/check-mcp.js && node --check server/maps.js && node --check public/route-map.js && node --check public/map-geometry.js && node --check server/tls.js && node --check scripts/setup-https.js",
+    "test": "node test/core.test.js && node test/ui-smoke.js && node test/providers.test.js && node test/location.test.js && node test/dynamic.test.js && node test/maps.test.js && node test/https.test.js && node test/auth.test.js",
+    "check": "node --check server/index.js && node --check public/app.js && node --check public/sensors.js && node --check server/providers.js && node --check scripts/mcp-server.js && node --check scripts/check-providers.js && node --check scripts/check-mcp.js && node --check server/maps.js && node --check public/route-map.js && node --check public/map-geometry.js && node --check server/tls.js && node --check scripts/setup-https.js && node --check server/auth.js",
     "providers:check": "node --use-env-proxy --env-file-if-exists=.env scripts/check-providers.js",
     "mcp:qweather": "node scripts/mcp-server.js qweather",
     "mcp:amap": "node scripts/mcp-server.js amap-maps",
