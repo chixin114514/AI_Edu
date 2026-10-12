@@ -25,7 +25,9 @@
 - [x] At 390×844 verify first-screen planning, draft retention, rejected and accepted suggestions, check-in, end and report. At 320px and desktop verify overflow and controls.
 - [x] Check console errors and relevant computed styles; save screenshots outside tracked source.
 - [x] Document results in `docs/VALIDATION.md`, including demo-only and no hardware verification limitations.
-- [ ] Review `git diff --check`, targeted diff and test output. Commit explicitly named files, push branch with verified Moln-ya connection, create and attach PR.
+- [x] Review `git diff --check`, targeted diff and test output. Commit explicitly named files, publish branch with verified Moln-ya connection, create and attach PR.
+
+Delivered as [PR #1](https://github.com/chixin114514/AI_Edu/pull/1) by `Moln-ya`, targeting `master` from `codex/mobile-experience`. GitHub reports no merge conflicts. Publication used the connected GitHub API; the published source tree matched the locally verified tree.
 
 ## Upstream integration
 
