@@ -115,3 +115,9 @@ TypeSafe正式请求格式、概率校验、模型授权阻断、超时／401／
 - Chrome 在 320、360、375、390、430、600、768、1440px 八个宽度验证：字段不重叠、控件不越界、页面无横向溢出；修改日期／时间后切换尺寸，值保持不变。
 - 仅调整 CSS 与静态缓存版本，未改变行程接口。iOS 原生选择器仍需实体设备验收。
 - 记录：`artifacts/mobile-form-result.json`、`artifacts/mobile-form-390.png`（均不提交）。
+
+### iPhone Safari 宽度修正
+
+- 用户在 iPhone Safari 仍遇到三个日期／时间字段越界，因此为原生控件增加独立的限宽容器，并将控件从父级的固有尺寸计算中隔离；保留原生 date/time 类型和表单值。
+- 补充 Playwright WebKit 26.0 + iPhone 13 模拟配置，在上述八个宽度检查控件边界、字段重叠、横向溢出及点击／改值，全部通过；Chrome 和前后端冒烟检查通过。
+- WebKit 模拟不等同于实体 iPhone Safari 验收。截图与记录：`artifacts/safari-form-390.png`、`artifacts/safari-form-result.json`（均不提交）。

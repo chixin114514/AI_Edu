@@ -29,10 +29,14 @@
 #plan-form .form-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
 #plan-form .field{min-width:0}
 #plan-form .field input,#plan-form .field select{max-width:100%;min-inline-size:0;box-sizing:border-box}
-#plan-form input[type=date],#plan-form input[type=time]{display:block;min-height:44px}
+#plan-form .temporal-control{display:block;position:relative;width:100%;min-width:0;max-width:100%;height:48px;overflow:hidden;border-radius:9px}
+#plan-form .temporal-control:focus-within{box-shadow:0 0 0 3px #eaf0e5}
+/* Isolate Safari's intrinsic date/time sizing from the grid and label. */
+#plan-form .temporal-control input{position:absolute;inset:0;display:block;width:100%;min-width:0;max-width:100%;height:100%;margin:0;-webkit-appearance:none;appearance:none;overflow:hidden;text-align:left}
 @media(max-width:600px){
  #plan-form .form-grid{grid-template-columns:minmax(0,1fr)}
  #plan-form .form-grid>.field>input,#plan-form .form-grid>.field>select{font-size:16px;min-height:44px}
+ #plan-form .temporal-control input{font-size:16px}
  #plan-form input::-webkit-date-and-time-value{text-align:left;min-height:1.2em}
  #plan-form input::-webkit-datetime-edit{min-width:0;padding:0}
 }
