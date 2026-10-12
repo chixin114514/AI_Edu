@@ -127,6 +127,72 @@ async function appendDestination(main,destination){
   return {...main,stops:[...main.stops,stop],distance_m:main.distance_m+transit.distance_m,
     duration_min:arrival-minutes(main.stops[0].arrival)};
 }
+// 用户手动调整当天顺序时的单站解析。
+// 能在行程里找到 id 就原样复用；候选池里的地点也以池内事实为准，客户端不能借这个
+// 接口伪造票价、评分或营业时间。只有全新的地点才按"用户自己新增"处理。
+function resolveStop(ref,index,trip){
+  ensure(ref&&typeof ref==='object'&&!Array.isArray(ref),'地点格式无效');
+  if(typeof ref.id==='string'&&ref.id){
+    // 已经在行程里的节点（含用户自己加的 custom-*）原样复用，**保住原来的 id**：
+    // 每次编辑都换一批 id 会把日记的键（行程:天:站点）打断。
+    const inTrip=(trip.days||[]).flatMap(day=>day.stops).find(stop=>stop.id===ref.id);
+    if(inTrip)return inTrip;
+    const known=(trip.poi_catalog||pois).find(p=>p.id===ref.id)||byId(ref.id);
+    ensure(known,`行程里没有这个地点：${ref.id}`,400);
+    return known;
+  }
+  const point=readPoint(ref,`第${index+1}个地点`);
+  const category=['自然','人文','建筑','展览','美食'].includes(ref.category)?ref.category:'人文';
+  const duration=Number(ref.duration_min);
+  return {id:'custom-'+randomUUID().slice(0,8),name:point.name,lng:point.lng,lat:point.lat,coordinate_system:'GCJ-02',category,
+    indoor:ref.indoor===true,indoor_inferred:true,
+    duration_min:Number.isFinite(duration)&&duration>=10&&duration<=180?duration:(category==='美食'?60:45),
+    price:null,open:null,close:null,closed_days:[],opening_text:'',
+    per_capita_cost:null,rating:null,commerce_source:null,commerce_fetched_at:null,
+    reservation:'你自己添加的地点，开放时间与预约要求需自行核实',accessibility:'待核实',slope:'unknown',
+    description:'你添加到行程的地点',source:'用户添加',source_url:'',updated_at:new Date().toISOString(),
+    verified:false,confidence:'user_added',rank:0};
+}
+// 手动重排一天。与自动规划的关键差别：**不静默丢站**。
+// 自动规划会把超出约束的节点放进 skipped，但用户亲手排的顺序是他明确的选择，
+// 悄悄删掉比排不进去更糟，所以这里全部保留，逐条给出警告让用户自己决定。
+export async function rebuildDay(trip,dayIndex,refs){
+  const prefs=trip.preferences,day=trip.days[dayIndex];
+  // 终点由 preferences.end_point 决定，不交给客户端增删，以免被误删或挪到中间。
+  const wanted=(Array.isArray(refs)?refs:[]).filter(ref=>ref&&ref.id!=='destination');
+  ensure(wanted.length>=2&&wanted.length<=8,'每天需要保留2—8个地点');
+  const stops=[],seen=new Set();
+  for(const [index,ref] of wanted.entries()){
+    const stop=resolveStop(ref,index,trip);
+    ensure(!seen.has(stop.id),`同一个地点不能重复出现：${stop.name}`);
+    seen.add(stop.id);stops.push(stop);
+  }
+  const warnings=[],origin=prefs.start_point||undefined,startAt=minutes(prefs.start_time);
+  let time=startAt,walk=0,cost=0,prev=origin||null;
+  const scheduled=[];
+  for(const stop of stops){
+    const legTo=prev?await leg(prev,stop):{distance_m:0,duration_min:0,source:'起点',mode:liveMode()?'live':'demo',polyline:[]};
+    const arrival=Math.max(time+legTo.duration_min,stop.open?minutes(stop.open):time);
+    const departure=arrival+stop.duration_min;
+    const reason=cleanStopReason(stop.recommendation_reason,stop.name);
+    scheduled.push({...stop,arrival:clock(arrival),departure:clock(departure),leg:legTo,
+      recommendation_reason:reason||defaultStopReason(stop,prefs),
+      recommendation_source:reason?(stop.recommendation_source||'规划规则'):'规划规则'});
+    walk+=legTo.distance_m;cost+=stop.price??0;time=departure+10;prev=stop;
+  }
+  const weekday=new Date(day.date+'T12:00:00+08:00').getUTCDay();
+  for(const stop of scheduled)if((stop.closed_days||[]).includes(weekday))warnings.push(`「${stop.name}」在你选的日期通常闭馆，请出发前核实。`);
+  if(minutes(scheduled.at(-1).departure)>minutes(prefs.end_time)-20)warnings.push(`按这个顺序会在 ${scheduled.at(-1).departure} 结束，晚于你设定的 ${prefs.end_time}，请删减节点或延长结束时间。`);
+  if(walk>prefs.walk_limit_km*1000+0.001)warnings.push(`调整后总步行约 ${(walk/1000).toFixed(1)} km，超过每日上限 ${prefs.walk_limit_km} km。`);
+  if(cost>prefs.budget/prefs.days)warnings.push(`已知费用 ¥${cost} 超出按天分摊的预算 ¥${Math.round(prefs.budget/prefs.days)}。`);
+  let result={stops:scheduled,skipped:[],distance_m:walk,cost,unknown_cost_count:scheduled.filter(stop=>stop.price===null).length,
+    duration_min:minutes(scheduled.at(-1).departure)-startAt};
+  if(dayIndex===trip.days.length-1&&prefs.end_point)result=await appendDestination(result,prefs.end_point);
+  // 雨天候选照旧重新挑一轮室内节点，保持"雨天也有好去处"可用。
+  const indoor=(trip.poi_catalog||pois).filter(poi=>poi.indoor&&!scheduled.some(stop=>stop.id===poi.id));
+  const rain=await schedule(orderCandidates(indoor,prefs,result.stops[0]).slice(0,4),prefs,day.date,undefined,origin,trip.poi_catalog);
+  return {day:{day:day.day,date:day.date,...result,plan_b:rain},warnings};
+}
 async function dynamicPlan(prefs){
   let region;try{region=await cityRegion(prefs.city);}catch(e){if(e.providerCode==='CITY_NOT_FOUND')throw new HttpError(422,'未找到唯一城市，请填写完整城市名，例如苏州市；暂不支持直接填写省份或区县');throw e;}
   prefs.city=region.name;

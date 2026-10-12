@@ -25,7 +25,7 @@ function browser({ stored = new Map(), fetch = async () => ({ ok: true, json: as
   }
   const context = vm.createContext({
     console, document: { querySelector: node, querySelectorAll: () => [], addEventListener: (type, fn) => handlers.set(type, fn) },
-    window: { addEventListener() {}, scrollTo() {}, isSecureContext: false },
+    window: { addEventListener() {}, removeEventListener() {}, scrollTo() {}, isSecureContext: false },
     navigator: {}, location: { hash: '', origin: 'https://travel.example' }, history: { replaceState() {} },
     localStorage: { getItem: key => stored.get(key) ?? null, setItem: (key, value) => stored.set(key, value), removeItem: key => stored.delete(key) },
     setTimeout: () => 0, clearTimeout() {}, Sensors: FakeSensors, cleanStopReason, defaultStopReason, routeMapMarkup:()=>'',mountRouteMaps(){},destroyRouteMaps(){}, URL, Blob, AbortController,
@@ -400,4 +400,186 @@ test('换乘与高程结果不会跨旅行日复用',async()=>{
   assert.equal(b.run('state.transit.result'),null);
   assert.equal(b.run('state.elevation.data'),null);
   assert.equal(b.run('state.transit.from.name'),'第1站 甲地');
+});
+
+// ---------------- 景点详情、增删改序、日记、步频与收尾文字 ----------------
+
+const editStops=[{id:'p1',name:'第一站',category:'自然',lat:30.25,lng:120.15,duration_min:45,price:null,per_capita_cost:null,rating:null,indoor:false,recommendation_reason:'沿湖的一段',leg:{distance_m:0,duration_min:0,polyline:[],mode:'live'}},
+  {id:'p2',name:'第二站',category:'人文',lat:30.26,lng:120.16,duration_min:45,price:null,per_capita_cost:null,rating:null,indoor:true,recommendation_reason:'室内看看展',leg:{distance_m:900,duration_min:12,polyline:[],mode:'live'}},
+  {id:'p3',name:'第三站',category:'美食',lat:30.27,lng:120.17,duration_min:60,price:null,per_capita_cost:58,rating:4.6,indoor:true,recommendation_reason:'吃口热的',leg:{distance_m:700,duration_min:9,polyline:[],mode:'live'}}];
+const editTrip={...toolsTrip,id:'trip-edit',poi_catalog:editStops,preferences:{...toolsTrip.preferences,must_visit:[]},
+  days:[{...toolsTrip.days[0],stops:editStops.map(stop=>({...stop,arrival:'09:10',departure:'09:55'}))}]};
+function editBrowser({handler}={}){
+  const b=toolsBrowser({handler:async(url,options)=>{
+    if(handler){const done=await handler(url,options);if(done)return done;}
+    if(url==='/api/elevation')return {ok:true,json:async()=>({summary:{min_m:23},samples:[],segments:[]})};
+    if(url==='/api/journal')return {ok:true,json:async()=>({entry:{id:'e',trip_id:'trip-edit',day:1,stop_id:'p1',stop_name:'第一站',text:'留一句',photo_ids:[],created_at:'2026-10-20T09:00:00Z',updated_at:'2026-10-20T09:00:00Z'}})};
+    if(url==='/api/trip/trip-edit/journal')return {ok:true,json:async()=>({entries:[],limits:{}})}; 
+    throw new Error('unexpected '+url);
+  }});
+  b.run('state.trip='+JSON.stringify(editTrip)+';state.pois=[];state.journal={};state.journalTrip="trip-edit";');
+  return b;
+}
+
+test('景点详情弹窗给出时间、坐标、海拔与分段导航链接',async()=>{
+  const b=editBrowser();
+  await b.run("(async()=>{state.page='trip';await render();})()");
+  assert.match(b.node('#app').innerHTML,/data-stop-detail="p2"/);
+  await clickNode(b,{id:'',dataset:{stopDetail:'p2'}});
+  // 海拔是拿到详情之后再补的，等一拍再断言。
+  await new Promise(resolve=>setImmediate(resolve));
+  const modal=b.node('#modal-content').innerHTML;
+  assert.match(modal,/第二站/);
+  assert.match(modal,/09:10 — 09:55/);
+  assert.match(modal,/GCJ-02 120\.16000, 30\.26000/);
+  assert.match(modal,/900 m · 12 分钟/);
+  assert.match(modal,/约 23 米/,'海拔由 /api/elevation 补上');
+  // 导航按段生成，坐标顺序是「经度,纬度」，并且是步行模式。
+  const navigation=modal.match(/href="[^"]*uri\.amap\.com\/navigation[^"]*"/g)||[];
+  assert.equal(navigation.length,2,'既要有「导航到这一站」，也要有「去下一站」');
+  assert.match(navigation[0],/from=120\.15,30\.25,/);
+  assert.match(navigation[0],/to=120\.16,30\.26/);
+  assert.match(navigation[0],/mode=walk/);
+  assert.match(navigation[1],/from=120\.16,30\.26/);
+  assert.match(navigation[1],/to=120\.17,30\.27/);
+  assert.match(modal,/uri\.amap\.com\/marker/);
+});
+
+test('移出与加入当天行程都会提交完整的新顺序',async()=>{
+  const posted=[];
+  const b=editBrowser({handler:async(url,options)=>{
+    if(url==='/api/trip/trip-edit/stops'){
+      posted.push(JSON.parse(options.body));
+      // 回一个和提交内容一致的行程，后面的操作才是在新状态上继续。
+      const stops=posted.at(-1).stops.map(item=>editStops.find(stop=>stop.id===item.id)||{...item,id:'custom-1'});
+      return {ok:true,json:async()=>({trip:{...editTrip,version:2+posted.length,days:[{...editTrip.days[0],stops}]},warnings:[]})};
+    }
+    return null;
+  }});
+  await b.run("(async()=>{state.page='trip';await render();})()");
+  await clickNode(b,{id:'',dataset:{stopRemove:'p3'}});
+  assert.equal(posted.length,1);
+  assert.deepEqual(posted[0].stops.map(stop=>stop.id),['p1','p2'],'移出后提交剩下的顺序');
+  assert.equal(posted[0].day,1);
+  await clickNode(b,{id:'',dataset:{addStop:'p3'}});
+  assert.equal(posted.length,2);
+  assert.deepEqual(posted[1].stops.map(stop=>stop.id),['p1','p2','p3'],'加入后追加到当天末尾');
+  // 候选池里的地点只回传 id，客户端不能借编辑接口改票价。
+  assert.deepEqual(Object.keys(posted[1].stops[2]),['id']);
+});
+
+test('拖拽松手后按新顺序提交，顺序没变则不提交',async()=>{
+  const posted=[];
+  const b=editBrowser({handler:async(url,options)=>{
+    if(url==='/api/trip/trip-edit/stops'){posted.push(JSON.parse(options.body));return {ok:true,json:async()=>({trip:{...editTrip,version:2},warnings:['调整后总步行约 8.0 km，超过每日上限 6 km。']})};}
+    return null;
+  }});
+  await b.run("(async()=>{state.page='trip';await render();})()");
+  // 指针几何依赖真实布局，DOM 桩里没有；这里只验证松手后的提交逻辑。
+  await b.run("dragState={list:{querySelectorAll:()=>['p2','p3','p1'].map(id=>({dataset:{stop:id}}))},dragging:{classList:{remove(){}}},before:['p1','p2','p3'],rects:new Map()};endStopDrag()");
+  assert.equal(posted.length,1);
+  assert.deepEqual(posted[0].stops.map(stop=>stop.id),['p2','p3','p1']);
+  assert.match(b.node('#toast').textContent,/超过每日上限/,'服务端的警告要如实转达');
+  await b.run("dragState={list:{querySelectorAll:()=>['p1','p2','p3'].map(id=>({dataset:{stop:id}}))},dragging:{classList:{remove(){}}},before:['p1','p2','p3'],rects:new Map()};endStopDrag()");
+  assert.equal(posted.length,1,'顺序没变就不该发请求');
+});
+
+test('伴行页心率步频常驻显示，写日记时文字落到接口',async()=>{
+  const posted=[];
+  const b=editBrowser({handler:async(url,options)=>{
+    if(url==='/api/journal'){posted.push(JSON.parse(options.body));return {ok:true,json:async()=>({entry:{id:'e',trip_id:'trip-edit',day:1,stop_id:'p1',stop_name:'第一站',text:'风很大，坐了一会儿',photo_ids:['ph1'],created_at:'2026-10-20T09:00:00Z',updated_at:'2026-10-20T09:30:00Z'}})};}
+    return null;
+  }});
+  b.run("state.session={id:'s1',trip_id:'trip-edit',day:1,status:'active',current_index:0,model_consent:false};state.sensor={motionActive:true,cadence:96,hr:88,steps:1200};");
+  await b.run("(async()=>{state.page='journey';await render();})()");
+  const html=b.node('#app').innerHTML;
+  // 心率与步频直接展示，不再藏在折叠面板里。
+  assert.match(html,/当前心率/);
+  assert.match(html,/估计步频/);
+  assert.doesNotMatch(html,/device-details/);
+  assert.match(html,/这一站的日记/);
+  await click(b,'edit-journal');
+  assert.match(b.node('#modal-content').innerHTML,/这一刻/);
+  // 从文本框取值，而不是直接写状态：真实用户是在 textarea 里打字的。
+  b.node('#journal-text').value='风很大，坐了一会儿';
+  await click(b,'save-journal');
+  assert.equal(posted.length,1);
+  assert.deepEqual(posted[0],{trip_id:'trip-edit',day:1,stop_id:'p1',text:'风很大，坐了一会儿'});
+  assert.equal(b.run('state.journal["1:p1"].text'),'风很大，坐了一会儿');
+  assert.equal(b.node('#modal').open,false);
+});
+
+test('弹窗重绘前先把文本框的值收回草稿，加照片不会丢掉已输入的文字',async()=>{
+  const b=editBrowser();
+  b.run("state.session={id:'s1',trip_id:'trip-edit',day:1,status:'active',current_index:0,model_consent:false};state.sensor={};");
+  await b.run("(async()=>{state.page='journey';await render();})()");
+  await click(b,'edit-journal');
+  b.node('#journal-text').value='已经打好的字';
+  // 真实的输入监听挂在 #app 上，弹窗里的文本框不在其中，所以重绘前必须手动同步。
+  b.run('syncJournalText()');
+  assert.equal(b.run('state.journalDraft.text'),'已经打好的字');
+  b.run('paintJournal()');
+  assert.match(b.node('#modal-content').innerHTML,/已经打好的字/,'重绘后文字仍然在');
+  // 既没有文字也没有照片时，服务端会删掉记录，提示不能谎称已保存。
+  const empty=editBrowser({handler:async url=>url==='/api/journal'?{ok:true,json:async()=>({entry:null,deleted:true})}:null});
+  empty.run("state.session={id:'s1',trip_id:'trip-edit',day:1,status:'active',current_index:0,model_consent:false};state.sensor={};");
+  await empty.run("(async()=>{state.page='journey';await render();})()");
+  await click(empty,'edit-journal');
+  await click(empty,'save-journal');
+  assert.match(empty.node('#toast').textContent,/已经删掉/);
+});
+
+test('已有日记会直接显示在伴行页，照片用 data URL 内联',async()=>{
+  const b=editBrowser();
+  b.run("state.session={id:'s1',trip_id:'trip-edit',day:1,status:'active',current_index:0,model_consent:false};state.journal={'1:p1':{id:'e',day:1,stop_id:'p1',stop_name:'第一站',text:'先前的记录',photos:[{id:'ph0',mime:'image/jpeg',size:10,url:'data:image/jpeg;base64,AAA'}],updated_at:'2026-10-20T09:00:00Z'}};state.journalTrip='trip-edit';");
+  await b.run("(async()=>{state.page='journey';await render();})()");
+  const html=b.node('#app').innerHTML;
+  assert.match(html,/先前的记录/);
+  assert.match(html,/data:image\/jpeg;base64,AAA/);
+  await click(b,'edit-journal');
+  assert.match(b.node('#modal-content').innerHTML,/data:image\/jpeg;base64,AAA/,'编辑时能看到已有的照片');
+  assert.match(b.node('#modal-content').innerHTML,/删除这张/);
+});
+
+test('开始漫游时默认申请步频，失败也不打扰',async()=>{
+  const b=editBrowser({handler:async url=>url==='/api/session/start'?{ok:true,json:async()=>({id:'s1',trip_id:'trip-edit',day:1,status:'active',current_index:0,model_consent:false,ended_at:null})}:null});
+  b.run("window.DeviceMotionEvent=function(){};let motionCalls=0;sensors.startMotion=async()=>{motionCalls++;state.sensor={...state.sensor,motionActive:true};};sensors.disconnect=()=>{};state.journalTrip='trip-edit';");
+  b.node('#health-model-consent').checked=false;
+  await click(b,'start-journey');
+  await click(b,'confirm-start');
+  assert.equal(b.run('motionCalls'),1,'开始漫游时自动开启步频');
+  // 不支持运动传感器的浏览器里静默跳过，不弹提示。
+  const plain=editBrowser({handler:async url=>url==='/api/session/start'?{ok:true,json:async()=>({id:'s2',trip_id:'trip-edit',day:1,status:'active',current_index:0,model_consent:false,ended_at:null})}:null});
+  plain.run("let m=0;sensors.startMotion=async()=>{m++;};sensors.disconnect=()=>{};state.journalTrip='trip-edit';");
+  plain.node('#health-model-consent').checked=false;
+  await click(plain,'start-journey');
+  await click(plain,'confirm-start');
+  assert.equal(plain.run('m'),0);
+});
+
+test('收尾文字卡片：未授权时说明原因，授权后可生成并展示',async()=>{
+  const noConsent=editBrowser({handler:async url=>url==='/api/trip/trip-edit/report'?{ok:true,json:async()=>({finished:true,visited_stops:2,total_stops:3,walked_km:2.4,planned_distance_km:3.1,accepted:1,rejected:0,events:[],preference_note:'继续记录。',data_mode:'live',summary:null,journal:[]})}:null});
+  noConsent.run("(async()=>{state.page='report';await render();})()");
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.match(noConsent.node('#app').innerHTML,/没有开启模型授权/);
+  assert.doesNotMatch(noConsent.node('#app').innerHTML,/id="write-summary"/);
+
+  let summaryCalls=0,generated=null;
+  const summaryRecord={text:'风把湖面吹皱。',generated_at:'2026-10-20T10:00:00Z',source:'DeepSeek summary-model'};
+  const consented=editBrowser({handler:async url=>{
+    if(url==='/api/trip/trip-edit/report')return {ok:true,json:async()=>({finished:true,visited_stops:2,total_stops:3,walked_km:2.4,planned_distance_km:3.1,accepted:1,rejected:0,events:[],preference_note:'继续记录。',data_mode:'live',summary:generated,journal:[{id:'e',day:1,stop_id:'p1',stop_name:'第一站',text:'风很大',photos:[{id:'ph1',mime:'image/jpeg',size:9,url:'data:image/jpeg;base64,BBB'}],updated_at:'2026-10-20T09:10:00Z'}]})};
+    if(url==='/api/trip/trip-edit/summary'){summaryCalls++;generated=summaryRecord;return {ok:true,json:async()=>({summary:summaryRecord})};}
+    if(url==='/api/trip/trip-edit')return {ok:true,json:async()=>({...editTrip,preferences:{...editTrip.preferences,model_consent:true},summary:generated})};
+    return null;
+  }});
+  consented.run("state.trip="+JSON.stringify({...editTrip,preferences:{...editTrip.preferences,model_consent:true}}));
+  consented.run("(async()=>{state.page='report';await render();})()");
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.match(consented.node('#app').innerHTML,/写一段收尾文字/);
+  assert.match(consented.node('#app').innerHTML,/第二站的日记|这一程的日记/);
+  assert.match(consented.node('#app').innerHTML,/data:image\/jpeg;base64,BBB/);
+  await click(consented,'write-summary');
+  assert.equal(summaryCalls,1);
+  assert.match(consented.node('#app').innerHTML,/风把湖面吹皱。/);
+  assert.match(consented.node('#app').innerHTML,/summary-model/);
 });
