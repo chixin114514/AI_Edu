@@ -6,6 +6,9 @@ export class HttpError extends Error {constructor(status,message){super(message)
 export const ensure=(condition,message,status=400)=>{if(!condition)throw new HttpError(status,message);};
 export const minutes=t=>Number(t.slice(0,2))*60+Number(t.slice(3));
 export const clock=m=>`${String(Math.floor(m/60)).padStart(2,'0')}:${String(m%60).padStart(2,'0')}`;
+// 行程只排当天：越过零点的时刻不写进数据（否则会显示成 25:10），只在拒绝时拿来解释原因。
+const DAY_END=24*60;
+const nextDayClock=m=>m<2*DAY_END?`次日 ${clock(m-DAY_END)} `:` ${Math.floor(m/DAY_END)} 天后`;
 // 读取一个自定义坐标点（起点、终点、必去节点、换乘端点共用）。
 // 坐标一律按 GCJ-02 处理，与高德返回的地点保持同一坐标系。
 export function readPoint(value,label){
@@ -118,6 +121,7 @@ async function appendDestination(main,destination){
   const last=main.stops.at(-1);
   const transit=await leg(last,destination);
   const arrival=minutes(last.departure)+10+transit.duration_min;
+  ensure(arrival<DAY_END,`终点「${destination.name}」离最后一站步行约 ${(transit.distance_m/1000).toFixed(1)} km，要到${nextDayClock(arrival)}才能走到，当天排不下。请换一个近一点的终点。`,422);
   const stop={id:'destination',name:destination.name,lng:destination.lng,lat:destination.lat,coordinate_system:'GCJ-02',
     category:'终点',indoor:false,indoor_inferred:false,duration_min:0,price:null,open:null,close:null,closed_days:[],opening_text:'',
     per_capita_cost:null,rating:null,commerce_source:null,commerce_fetched_at:null,
@@ -156,7 +160,44 @@ function resolveStop(ref,index,trip){
 // 手动重排一天。与自动规划的关键差别：**不静默丢站**。
 // 自动规划会把超出约束的节点放进 skipped，但用户亲手排的顺序是他明确的选择，
 // 悄悄删掉比排不进去更糟，所以这里全部保留，逐条给出警告让用户自己决定。
-export async function rebuildDay(trip,dayIndex,refs){
+// 新加的地点放在哪一站最合适。只用直线距离估算，不额外请求地图服务；选定位置后仍按真实步行重算。
+// 餐厅优先落在还没安排吃饭的饭点（午餐 11:00—13:30、晚餐 17:00—19:30），其次看绕路多少；
+// 其它地点只看绕路。已知营业时间的，到店时没开门或吃不完就基本不选。
+const MEALS=[{name:'午餐',from:11*60,to:13*60+30},{name:'晚餐',from:17*60,to:19*60+30}];
+export function bestInsertIndex(scheduled,stop,prefs,origin){
+  const walkMin=(a,b)=>a&&b?Math.ceil(approximateDistance(a,b)*1.3/70):0;
+  const outside=(at,meal)=>at<meal.from?meal.from-at:at>meal.to?at-meal.to:0;
+  const freeMeals=stop.category==='美食'?MEALS.filter(meal=>!scheduled.some(s=>s.category==='美食'&&outside(minutes(s.arrival),meal)<=30)):[];
+  let best=null;
+  for(let index=0;index<=scheduled.length;index++){
+    const prev=index?scheduled[index-1]:origin||null,next=scheduled[index]||null;
+    const arrival=(index?minutes(scheduled[index-1].departure)+10:minutes(prefs.start_time))+walkMin(prev,stop);
+    const detour=walkMin(prev,stop)+walkMin(stop,next)-walkMin(prev,next);
+    const meal=freeMeals.map(m=>({name:m.name,off:outside(arrival,m)})).sort((a,b)=>a.off-b.off)[0];
+    const shut=(stop.open&&arrival<minutes(stop.open))||(stop.close&&arrival+stop.duration_min>minutes(stop.close));
+    const score=(meal?meal.off:0)+detour*2+(shut?600:0);
+    if(!best||score<best.score)best={index,score,meal:meal&&meal.off===0?meal.name:null};
+  }
+  return best;
+}
+// 按给定顺序走一遍：逐段算步行、到达与离开时间。
+async function walkThrough(stops,prefs){
+  let time=minutes(prefs.start_time),walk=0,cost=0,prev=prefs.start_point||null;
+  const scheduled=[];
+  for(const stop of stops){
+    const legTo=prev?await leg(prev,stop):{distance_m:0,duration_min:0,source:'起点',mode:liveMode()?'live':'demo',polyline:[]};
+    const arrival=Math.max(time+legTo.duration_min,stop.open?minutes(stop.open):time);
+    const departure=arrival+stop.duration_min;
+    const reason=cleanStopReason(stop.recommendation_reason,stop.name);
+    // 越过零点后不再格式化成 HH:MM，交给调用方统一拒绝。
+    scheduled.push({...stop,arrival:arrival<DAY_END?clock(arrival):null,departure:departure<DAY_END?clock(departure):null,leg:legTo,
+      recommendation_reason:reason||defaultStopReason(stop,prefs),
+      recommendation_source:reason?(stop.recommendation_source||'规划规则'):'规划规则'});
+    walk+=legTo.distance_m;cost+=stop.price??0;time=departure+10;prev=stop;
+  }
+  return {scheduled,walk,cost,endAt:time-10};
+}
+export async function rebuildDay(trip,dayIndex,refs,{autoPlace}={}){
   const prefs=trip.preferences,day=trip.days[dayIndex];
   // 终点由 preferences.end_point 决定，不交给客户端增删，以免被误删或挪到中间。
   const wanted=(Array.isArray(refs)?refs:[]).filter(ref=>ref&&ref.id!=='destination');
@@ -168,18 +209,20 @@ export async function rebuildDay(trip,dayIndex,refs){
     seen.add(stop.id);stops.push(stop);
   }
   const warnings=[],origin=prefs.start_point||undefined,startAt=minutes(prefs.start_time);
-  let time=startAt,walk=0,cost=0,prev=origin||null;
-  const scheduled=[];
-  for(const stop of stops){
-    const legTo=prev?await leg(prev,stop):{distance_m:0,duration_min:0,source:'起点',mode:liveMode()?'live':'demo',polyline:[]};
-    const arrival=Math.max(time+legTo.duration_min,stop.open?minutes(stop.open):time);
-    const departure=arrival+stop.duration_min;
-    const reason=cleanStopReason(stop.recommendation_reason,stop.name);
-    scheduled.push({...stop,arrival:clock(arrival),departure:clock(departure),leg:legTo,
-      recommendation_reason:reason||defaultStopReason(stop,prefs),
-      recommendation_source:reason?(stop.recommendation_source||'规划规则'):'规划规则'});
-    walk+=legTo.distance_m;cost+=stop.price??0;time=departure+10;prev=stop;
+  // 新加的那一站可以交给服务端挑位置：先按其余各站的时间线选好插入点，再整体重算。
+  let placed=null;
+  if(autoPlace!=null){
+    ensure(Number.isInteger(autoPlace)&&autoPlace>=0&&autoPlace<stops.length,'要自动安排的地点无效');
+    const [added]=stops.splice(autoPlace,1);
+    const base=await walkThrough(stops,prefs);
+    // 其余各站本身就排到了次日时没有时间线可参考，放回末尾，由下面统一拒绝。
+    const spot=base.endAt<DAY_END?bestInsertIndex(base.scheduled,added,prefs,origin):{index:stops.length,meal:null};
+    stops.splice(spot.index,0,added);
+    placed={id:added.id,name:added.name,index:spot.index,meal:spot.meal};
   }
+  const {scheduled,walk,cost,endAt}=await walkThrough(stops,prefs);
+  // 手动编辑不丢站，但一天装不下的排法也不能存：否则到达时间会变成 25:10 这样的时刻。
+  ensure(endAt<DAY_END,`这样排要到${nextDayClock(endAt)}才结束，一天排不下。请先移出几站，或换个近一点的地点。`);
   const weekday=new Date(day.date+'T12:00:00+08:00').getUTCDay();
   for(const stop of scheduled)if((stop.closed_days||[]).includes(weekday))warnings.push(`「${stop.name}」在你选的日期通常闭馆，请出发前核实。`);
   if(minutes(scheduled.at(-1).departure)>minutes(prefs.end_time)-20)warnings.push(`按这个顺序会在 ${scheduled.at(-1).departure} 结束，晚于你设定的 ${prefs.end_time}，请删减节点或延长结束时间。`);
@@ -191,7 +234,7 @@ export async function rebuildDay(trip,dayIndex,refs){
   // 雨天候选照旧重新挑一轮室内节点，保持"雨天也有好去处"可用。
   const indoor=(trip.poi_catalog||pois).filter(poi=>poi.indoor&&!scheduled.some(stop=>stop.id===poi.id));
   const rain=await schedule(orderCandidates(indoor,prefs,result.stops[0]).slice(0,4),prefs,day.date,undefined,origin,trip.poi_catalog);
-  return {day:{day:day.day,date:day.date,...result,plan_b:rain},warnings};
+  return {day:{day:day.day,date:day.date,...result,plan_b:rain},warnings,placed};
 }
 async function dynamicPlan(prefs){
   let region;try{region=await cityRegion(prefs.city);}catch(e){if(e.providerCode==='CITY_NOT_FOUND')throw new HttpError(422,'未找到唯一城市，请填写完整城市名，例如苏州市；暂不支持直接填写省份或区县');throw e;}

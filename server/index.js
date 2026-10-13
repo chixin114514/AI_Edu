@@ -196,13 +196,13 @@ export function createApp({database=process.env.DATABASE_PATH||'./data/manxing.s
         // 漫游进行中不能改线：会话里的 current_index 指向具体节点，重排会让它失去意义。
         ensure(!store.list('session',owner).some(s=>s.trip_id===trip.id&&!s.ended_at),'请先结束当前漫游，再调整行程顺序',409);
         let rebuilt;
-        try{rebuilt=await rebuildDay(trip,day-1,b.stops);}
+        try{rebuilt=await rebuildDay(trip,day-1,b.stops,{autoPlace:b.auto_place});}
         catch(e){if(e instanceof HttpError)throw e;throw new HttpError(503,'地图服务不可用，没有重算这段路线，行程保持不变');}
         trip.days[day-1]=rebuilt.day;
         // 版本号变化会让尚未确认的改线建议自动过期（confirm 时会比对 trip_version）。
         trip.version++;
         put('trip',trip);
-        return send({trip,warnings:rebuilt.warnings});
+        return send({trip,warnings:rebuilt.warnings,placed:rebuilt.placed});
       }
       if(/^\/api\/trip\/[^/]+\/map$/.test(path)&&req.method==='GET'){
         const trip=get('trip',path.split('/')[3]),q=new URL(req.url,'http://local').searchParams;

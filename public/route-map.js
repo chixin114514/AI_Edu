@@ -1,5 +1,7 @@
 import {mapPixel,routePaths,validPoint,panMapCenter} from './map-geometry.js';
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+// 更早生成的行程里可能存着 25:10 这样的时刻，显示成「次日 01:10」。
+const dayTime=t=>{const m=/^(\d{2,}):(\d{2})$/.exec(t||'');return m&&Number(m[1])>=24?`次日 ${String(Number(m[1])%24).padStart(2,'0')}:${m[2]}`:t||'';};
 const active=new Set();
 export function routeMapMarkup(trip,day){
  const stops=trip.days[day-1]?.stops||[];
@@ -14,7 +16,7 @@ export function mountRouteMaps(trip){
   const canvas=el.querySelector('.map-canvas'),picture=el.querySelector('.map-picture'),message=el.querySelector('.map-message');
   let view=null,focus=null,controller=null,sequence=0,disposed=false,busy=false,gesture=null,suppressClickUntil=0,lastRequest={};
   const controls=busy=>{for(const b of el.querySelectorAll('[data-map-action]'))b.disabled=busy;el.querySelector('[data-map-action="in"]').disabled=busy||view?.zoom===17;el.querySelector('[data-map-action="out"]').disabled=busy||view?.zoom===3;};
-  const selected=()=>{for(const b of el.querySelectorAll('[data-map-focus]'))b.setAttribute('aria-pressed',String(Number(b.dataset.mapFocus)===focus));const p=stops[focus];el.querySelector('.map-selected').innerHTML=p?`<strong>${esc(p.name)}</strong><p>${esc(p.arrival)}—${esc(p.departure)} · ${esc(p.description)}</p><a href="https://uri.amap.com/marker?position=${p.lng},${p.lat}&name=${encodeURIComponent(p.name)}&coordinate=gaode&callnative=0" target="_blank" rel="noopener noreferrer">在高德里看</a>`:'';};
+  const selected=()=>{for(const b of el.querySelectorAll('[data-map-focus]'))b.setAttribute('aria-pressed',String(Number(b.dataset.mapFocus)===focus));const p=stops[focus];el.querySelector('.map-selected').innerHTML=p?`<strong>${esc(p.name)}</strong><p>${esc(dayTime(p.arrival))}—${esc(dayTime(p.departure))} · ${esc(p.description)}</p><a href="https://uri.amap.com/marker?position=${p.lng},${p.lat}&name=${encodeURIComponent(p.name)}&coordinate=gaode&callnative=0" target="_blank" rel="noopener noreferrer">在高德里看</a>`:'';};
   async function load(zoom,center){
    lastRequest={zoom,center};busy=true;canvas.setAttribute('aria-busy','true');
    controller?.abort();controller=new AbortController();const request=++sequence;controls(true);message.hidden=false;message.textContent='正在加载高德地图…';

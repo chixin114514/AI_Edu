@@ -591,3 +591,120 @@ test('收尾文字卡片：未授权时说明原因，授权后可生成并展�
   assert.match(consented.node('#app').innerHTML,/风把湖面吹皱。/);
   assert.match(consented.node('#app').innerHTML,/summary-model/);
 });
+
+// ---------------- 行程安排：调整顺序、添加地点、自动落位 ----------------
+
+function stopsServer(posted,{placed=null}={}){
+  return async(url,options)=>{
+    if(url!=='/api/trip/trip-edit/stops')return null;
+    posted.push(JSON.parse(options.body));
+    const stops=posted.at(-1).stops.map((item,index)=>editStops.find(stop=>stop.id===item.id)||{...item,id:'custom-'+index,category:item.category||'人文',duration_min:45,leg:{distance_m:0,duration_min:0,polyline:[],mode:'live'}}).map(stop=>({...stop,arrival:'09:10',departure:'09:55'}));
+    return {ok:true,json:async()=>({trip:{...editTrip,version:2+posted.length,days:[{...editTrip.days[0],stops}]},warnings:[],placed})};
+  };
+}
+const order=html=>[...html.matchAll(/data-stop-remove="([^"]+)"/g)].map(match=>match[1]);
+
+test('上移下移先只改本地顺序，点保存才提交一次；撤销恢复原样',async()=>{
+  const posted=[];
+  const b=editBrowser({handler:stopsServer(posted)});
+  await b.run("(async()=>{state.page='trip';await render();})()");
+  assert.deepEqual(order(b.node('#app').innerHTML),['p1','p2','p3']);
+  assert.match(b.node('#app').innerHTML,/data-stop-move="-1" data-stop="p1"[^>]*disabled/,'第一站不能再上移');
+  assert.match(b.node('#app').innerHTML,/data-stop-move="1" data-stop="p3"[^>]*disabled/,'最后一站不能再下移');
+  assert.doesNotMatch(b.node('#app').innerHTML,/id="reorder-save"/);
+  await clickNode(b,{id:'',dataset:{stopMove:'1',stop:'p1'}});
+  await clickNode(b,{id:'',dataset:{stopMove:'1',stop:'p1'}});
+  const pending=b.node('#itinerary').innerHTML;
+  assert.deepEqual(order(pending),['p2','p3','p1']);
+  assert.match(pending,/id="reorder-save"/);
+  assert.doesNotMatch(pending,/<time>/,'顺序没保存前，旧的到达时间不再显示');
+  assert.equal(posted.length,0,'调整过程中不请求服务端');
+  await click(b,'reorder-cancel');
+  assert.deepEqual(order(b.node('#itinerary').innerHTML),['p1','p2','p3']);
+  assert.equal(b.run('state.reorder'),null);
+  // 挪回原位等于没改，不留下「未保存」状态。
+  await clickNode(b,{id:'',dataset:{stopMove:'1',stop:'p2'}});
+  await clickNode(b,{id:'',dataset:{stopMove:'-1',stop:'p2'}});
+  assert.equal(b.run('state.reorder'),null);
+  await clickNode(b,{id:'',dataset:{stopMove:'-1',stop:'p3'}});
+  await click(b,'reorder-save');
+  assert.equal(posted.length,1);
+  assert.deepEqual(posted[0].stops,[{id:'p1'},{id:'p3'},{id:'p2'}]);
+  assert.equal(posted[0].auto_place,undefined,'保存顺序时不让服务端再挪位置');
+  assert.equal(b.run('state.reorder'),null);
+  assert.deepEqual(order(b.node('#app').innerHTML),['p1','p3','p2']);
+  assert.match(b.node('#app').innerHTML,/<time>09:10<\/time>/);
+});
+
+test('未保存的顺序不会带到另一天，移出时连同新顺序一起提交',async()=>{
+  const posted=[];
+  const b=editBrowser({handler:stopsServer(posted)});
+  await b.run("(async()=>{state.page='trip';await render();})()");
+  await clickNode(b,{id:'',dataset:{stopMove:'-1',stop:'p3'}});
+  assert.equal(b.run('orderedStops().map(stop=>stop.id).join()'),'p1,p3,p2');
+  b.run('state.day=2');
+  assert.equal(b.run('orderedStops().length'),0,'另一天不受影响');
+  b.run('state.day=1');
+  await clickNode(b,{id:'',dataset:{stopRemove:'p1'}});
+  assert.deepEqual(posted[0].stops,[{id:'p3'},{id:'p2'}]);
+});
+
+test('添加地点：演示模式从候选里挑，新地点交给服务端选位置并提示结果',async()=>{
+  const posted=[];
+  const b=editBrowser({handler:stopsServer(posted,{placed:{id:'c2',name:'湖边面馆',index:1,meal:'午餐'}})});
+  b.run("state.config={data_mode:'demo'};state.trip.poi_catalog=[];state.pois="+JSON.stringify([
+    ...editStops,
+    {id:'c1',name:'远处的塔',category:'建筑',lat:30.40,lng:120.30,duration_min:45},
+    {id:'c2',name:'湖边面馆',category:'美食',lat:30.2601,lng:120.1601,duration_min:60}]));
+  await b.run("(async()=>{state.page='trip';await render();})()");
+  assert.match(b.node('#app').innerHTML,/id="add-place"/);
+  await click(b,'add-place');
+  const dialog=b.node('#modal-content').innerHTML;
+  assert.equal(b.node('#modal').open,true);
+  assert.match(dialog,/添加到第 1 天/);
+  assert.doesNotMatch(dialog,/id="place-search"/,'演示模式没有地点检索，不显示搜索框');
+  assert.doesNotMatch(dialog,/data-add-stop="p1"/,'已经在当天行程里的不再列出');
+  assert.ok(dialog.indexOf('湖边面馆')<dialog.indexOf('远处的塔'),'离路线近的排前面');
+  await clickNode(b,{id:'',dataset:{addStop:'c2'}});
+  assert.equal(posted.length,1);
+  assert.deepEqual(posted[0].stops,[{id:'p1'},{id:'p2'},{id:'p3'},{id:'c2'}]);
+  assert.equal(posted[0].auto_place,3);
+  assert.equal(b.node('#modal').open,false);
+  assert.match(b.node('#toast').textContent,/排在第 2 站/);
+  assert.match(b.node('#toast').textContent,/午餐时间/);
+});
+
+test('添加地点：实况模式可以搜索，搜到的新地点按名称与坐标提交',async()=>{
+  const posted=[];
+  const b=editBrowser({handler:async(url,options)=>{
+    // 搜索结果的 id 不在行程和候选池里，按新地点处理。
+    if(url==='/api/places')return {ok:true,json:async()=>({places:[{id:'amap-9',name:'测试酒店',lng:121,lat:31,category:'人文',address:'测试路1号'}]})};
+    return stopsServer(posted,{placed:{id:'custom-3',name:'测试酒店',index:3,meal:null}})(url,options);
+  }});
+  await b.run("(async()=>{state.page='trip';await render();})()");
+  await click(b,'add-place');
+  assert.match(b.node('#modal-content').innerHTML,/id="place-search"/);
+  await b.run("(async()=>runPlaceSearch('测试酒店'))()");
+  assert.equal(b.sent.find(entry=>entry.url==='/api/places').body.trip_id,'trip-edit');
+  await clickNode(b,{id:'',dataset:{place:'0'}});
+  assert.equal(posted.length,1);
+  assert.deepEqual(posted[0].stops.at(-1),{name:'测试酒店',lat:31,lng:121,category:'人文',indoor:false});
+  assert.equal(posted[0].auto_place,3);
+  assert.match(b.node('#toast').textContent,/最顺路/);
+});
+
+test('一天满 8 站时不再提交；旧数据里超过 24 点的时间显示成次日',async()=>{
+  const posted=[];
+  const b=editBrowser({handler:stopsServer(posted)});
+  const eight=Array.from({length:8},(_,index)=>({...editStops[0],id:'s'+index,name:'站'+index,arrival:'09:00',departure:'09:30'}));
+  b.run('state.trip.days[0].stops='+JSON.stringify(eight));
+  await b.run("addStop({id:'x',name:'第九个',lat:30,lng:120,category:'人文'})");
+  assert.equal(posted.length,0);
+  assert.match(b.node('#toast').textContent,/最多 8 个/);
+  assert.equal(b.run("dayTime('25:10')"),'次日 01:10');
+  assert.equal(b.run("dayTime('09:05')"),'09:05');
+  assert.equal(b.run("dayTime(undefined)"),'');
+  const late=b.run(`timeline({day:1,stops:[{id:'a',name:'很晚的一站',category:'人文',lng:120,lat:30,arrival:'24:35',departure:'25:20'}]})`);
+  assert.match(late,/<time>次日 00:35<\/time>/);
+  assert.doesNotMatch(late,/24:35/);
+});

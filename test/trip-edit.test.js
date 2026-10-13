@@ -158,3 +158,82 @@ test('结束之后可以让 DeepSeek 写一段收尾文字，并随行程保存'
   const empty = await consented.request(`/trip/${consented.trip.id}/summary`, {});
   assert.equal(empty.status, 503);
 });
+
+// ---------------- 自动选位与跨零点 ----------------
+
+const toMinutes = text => Number(text.slice(0, 2)) * 60 + Number(text.slice(3));
+
+test('加餐厅时交给服务端选位置：落在午餐时间，而不是排到最后', async t => {
+  const { request, trip } = await plan(t);
+  const original = ids(trip.days[0]);
+  assert.ok(!trip.days[0].stops.some(stop => stop.category === '美食'), '样例行程里原本没有餐厅');
+  // 客户端把新地点放在列表末尾，并用 auto_place 指出它的下标。
+  const added = await request(`/trip/${trip.id}/stops`, { day: 1, stops: [...payload(original), { id: 'lunch-hubin' }], auto_place: original.length });
+  assert.equal(added.status, 200);
+  const stops = added.body.trip.days[0].stops, at = stops.findIndex(stop => stop.id === 'lunch-hubin');
+  assert.equal(added.body.placed.id, 'lunch-hubin');
+  assert.equal(added.body.placed.index, at, '返回的位置就是最终位置');
+  assert.equal(added.body.placed.meal, '午餐');
+  assert.ok(at > 0 && at < stops.length - 1, '不在开头也不在末尾');
+  const arrival = toMinutes(stops[at].arrival);
+  assert.ok(arrival >= 11 * 60 && arrival <= 13 * 60 + 30, `到店时间 ${stops[at].arrival} 应在午餐时段`);
+  // 其余各站的相对顺序不变。
+  assert.deepEqual(stops.filter(stop => stop.id !== 'lunch-hubin').map(stop => stop.id), original);
+  // 午餐已经有了，再加一家就不再挤进午餐时段。
+  const second = await request(`/trip/${trip.id}/stops`, { day: 1, stops: [...payload(ids(added.body.trip.days[0])), { id: 'hefang' }], auto_place: original.length + 1 });
+  assert.equal(second.status, 200);
+  assert.notEqual(second.body.placed.meal, '午餐');
+});
+
+test('不带 auto_place 时顺序完全由客户端决定；下标非法要拒绝', async t => {
+  const { request, trip } = await plan(t);
+  const original = ids(trip.days[0]);
+  const plain = await request(`/trip/${trip.id}/stops`, { day: 1, stops: [...payload(original), { id: 'lunch-hubin' }] });
+  assert.equal(plain.body.trip.days[0].stops.at(-1).id, 'lunch-hubin');
+  assert.equal(plain.body.placed, null);
+  const bad = await request(`/trip/${trip.id}/stops`, { day: 1, stops: payload(original), auto_place: 99 });
+  assert.equal(bad.status, 400);
+});
+
+test('非餐厅地点自动选位只看绕路：放在离它最近的两站之间', async t => {
+  const { request, trip } = await plan(t);
+  const original = ids(trip.days[0]), stops = trip.days[0].stops;
+  // 取第 2、3 站的中点，最顺路的位置就是它们之间。
+  const middle = { name: '两站中间的亭子', lat: (stops[1].lat + stops[2].lat) / 2, lng: (stops[1].lng + stops[2].lng) / 2, category: '人文' };
+  const added = await request(`/trip/${trip.id}/stops`, { day: 1, stops: [...payload(original), middle], auto_place: original.length });
+  assert.equal(added.status, 200);
+  assert.equal(added.body.placed.index, 2);
+  assert.equal(added.body.placed.meal, null);
+  assert.equal(added.body.trip.days[0].stops[2].name, '两站中间的亭子');
+});
+
+test('排到次日的改动直接拒绝，行程保持不变，不会出现 25:10 这样的时间', async t => {
+  const { request, trip } = await plan(t);
+  const original = ids(trip.days[0]);
+  // 往北三十多公里：步行过去要十个小时左右，排进去就过了零点。
+  const far = { name: '很远的地方', lat: 30.55, lng: 120.15, category: '人文' };
+  for (const body of [{ stops: [...payload(original), far] }, { stops: [...payload(original), far], auto_place: original.length }]) {
+    const edited = await request(`/trip/${trip.id}/stops`, { day: 1, ...body });
+    assert.equal(edited.status, 400);
+    assert.match(edited.body.error, /次日 \d{2}:\d{2}/);
+    assert.doesNotMatch(edited.body.error, /(2[4-9]|[3-9]\d):\d{2}/, '提示里也不能出现 24 点以后的写法');
+  }
+  // 远到要走好几天的，说「几天后」，同样不拼出 46:20 这种时刻。
+  const absurd = await request(`/trip/${trip.id}/stops`, { day: 1, stops: [...payload(original), { name: '另一座城市', lat: 31.23, lng: 121.47 }] });
+  assert.equal(absurd.status, 400);
+  assert.match(absurd.body.error, /\d 天后/);
+  assert.doesNotMatch(absurd.body.error, /\d{2}:\d{2}/);
+  const saved = (await request('/trip/' + trip.id)).body;
+  assert.deepEqual(ids(saved.days[0]), original);
+  assert.equal(saved.version, trip.version);
+  for (const stop of saved.days[0].stops) assert.ok(toMinutes(stop.departure) < 24 * 60);
+});
+
+test('终点太远、当天走不到时规划直接说明原因', async t => {
+  const app = createApp({ database: ':memory:' });
+  t.after(() => app.emit('close'));
+  const planned = await dispatch(app, '/api/trip/plan', { ...PLAN, end_point: { name: '很远的酒店', lat: 30.55, lng: 120.15 } });
+  assert.equal(planned.status, 422);
+  assert.match(planned.body.error, /终点「很远的酒店」/);
+  assert.match(planned.body.error, /次日/);
+});
