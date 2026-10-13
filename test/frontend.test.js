@@ -1,3 +1,5 @@
+import { pageRoutes, resolvePageRoute } from '../public/page-routes.js';
+import { sensorFeatures } from '../public/sensors.js';
 import { cleanStopReason, defaultStopReason } from '../public/stop-reasons.js';
 import vm from 'node:vm';
 import { readFile } from 'node:fs/promises';
@@ -7,8 +9,16 @@ import assert from 'node:assert/strict';
 const source = (await readFile(new URL('../public/app.js', import.meta.url), 'utf8'))
   .replace(/^import .*;$/gm, '').replace("import { Sensors } from './sensors.js';", '').replace('\ninit();', '\n');
 
-function browser({ stored = new Map(), fetch = async () => ({ ok: true, json: async () => ({}) }) } = {}) {
+function browser({ stored = new Map(), fetch = async () => ({ ok: true, json: async () => ({}) }), url = 'https://travel.example/plan' } = {}) {
   const handlers = new Map(), nodes = new Map();
+  const location=new URL(url),entries=[location.href];let historyIndex=0;
+  const history={
+    replaceState(_state,_unused,path){location.href=new URL(path,location.href).href;entries[historyIndex]=location.href;},
+    pushState(_state,_unused,path){location.href=new URL(path,location.href).href;entries.splice(++historyIndex);entries.push(location.href);},
+    back(){if(historyIndex>0){location.href=entries[--historyIndex];handlers.get('window:popstate')?.();}},
+    forward(){if(historyIndex<entries.length-1){location.href=entries[++historyIndex];handlers.get('window:popstate')?.();}},
+    get length(){return entries.length;}
+  };
   const node = selector => {
     if (!nodes.has(selector)) nodes.set(selector, {
       innerHTML: '', textContent: '', value: '', dataset: {}, querySelector: selector => node(selector),
@@ -25,14 +35,14 @@ function browser({ stored = new Map(), fetch = async () => ({ ok: true, json: as
   }
   const context = vm.createContext({
     console, document: { querySelector: node, querySelectorAll: () => [], addEventListener: (type, fn) => handlers.set(type, fn) },
-    window: { addEventListener() {}, removeEventListener() {}, scrollTo() {}, isSecureContext: false },
-    navigator: {}, location: { hash: '', origin: 'https://travel.example' }, history: { replaceState() {} },
+    window: { addEventListener(type,fn) { handlers.set('window:'+type,fn); }, removeEventListener() {}, scrollTo() {}, isSecureContext: false },
+    navigator: {}, location, history,
     localStorage: { getItem: key => stored.get(key) ?? null, setItem: (key, value) => stored.set(key, value), removeItem: key => stored.delete(key) },
-    setTimeout: () => 0, clearTimeout() {}, Sensors: FakeSensors, cleanStopReason, defaultStopReason, routeMapMarkup:()=>'',mountRouteMaps(){},destroyRouteMaps(){}, URL, Blob, AbortController,
+    setTimeout: () => 0, clearTimeout() {}, Sensors: FakeSensors, sensorFeatures, pageRoutes, resolvePageRoute, cleanStopReason, defaultStopReason, routeMapMarkup:()=>'',mountRouteMaps(){},destroyRouteMaps(){}, URL, Blob, AbortController,
     FormData: class { constructor(form) { return Object.entries(form.values)[Symbol.iterator](); } }, fetch
   });
   vm.runInContext(source, context);
-  return { run: code => vm.runInContext(code, context), handlers, node, stored };
+  return { run: code => vm.runInContext(code, context), handlers, node, stored, location, history };
 }
 
 test('planning values survive navigation and reload without persisting model consent', async () => {
@@ -61,6 +71,38 @@ test('malformed or unexpected stored draft values cannot break planning', async 
     assert.match(b.node('#app').innerHTML, /value="300"/);
     assert.doesNotMatch(b.node('#app').innerHTML, /\[object Object\]/);
   }
+});
+
+test('page paths support forward/back navigation and separate login/register URLs without losing readings',async()=>{
+  const b=browser();
+  b.run("state.sensor={hr:88,cadence:95};navigate('login')");await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(b.location.pathname,'/login');assert.match(b.node('#app').innerHTML,/欢迎回来/);
+  await clickNode(b,{dataset:{authMode:'register'}});
+  assert.equal(b.location.pathname,'/register');assert.match(b.node('#app').innerHTML,/创建账号/);
+  const before=b.history.length;
+  b.history.back();await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(b.location.pathname,'/login');assert.equal(b.run('state.authMode'),'login');assert.match(b.node('#app').innerHTML,/欢迎回来/);
+  b.history.forward();await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(b.location.pathname,'/register');assert.equal(b.run('state.authMode'),'register');assert.equal(b.history.length,before);
+  b.run("navigate('plan');navigate('plan')");await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(b.location.pathname,'/plan');assert.equal(b.history.length,before+1,'reselecting current page must not duplicate history');
+  assert.equal(b.run('state.sensor.hr'),88);assert.equal(b.run('state.sensor.cadence'),95);
+  const anchor={tagName:'A',dataset:{page:'trip'},classList:{contains:()=>false}};let prevented=false;
+  await b.handlers.get('click')({target:{closest:()=>anchor},ctrlKey:true,preventDefault(){prevented=true;}});
+  assert.equal(prevented,false,'modified link clicks must retain native new-tab behavior');assert.equal(b.location.pathname,'/plan');
+  await b.handlers.get('click')({target:{closest:()=>anchor},button:0,preventDefault(){prevented=true;}});
+  assert.equal(prevented,true);assert.equal(b.location.pathname,'/trip');assert.equal(b.run('state.sensor.hr'),88);
+});
+test('direct login/register pages, old bookmarks and account/ops guards resolve to the correct path',async()=>{
+  const fetch=async url=>({ok:true,json:async()=>url==='/api/auth/me'?{user:null}:url==='/api/config'?{data_mode:'demo'}:url==='/api/pois'?{pois:[]}:url==='/api/trips'?{trips:[]}:{provinces:[]}});
+  for(const [path,expected,title]of [['/login','/login','欢迎回来'],['/register','/register','创建账号'],['/#auth','/login','欢迎回来'],['/plan#register','/register','创建账号'],['/ops','/login','欢迎回来'],['/account','/login','欢迎回来']]){
+    const b=browser({fetch,url:'https://travel.example'+path});await b.run('init()');
+    assert.equal(b.location.pathname,expected,path);assert.equal(b.location.hash,'');assert.match(b.node('#app').innerHTML,new RegExp(title));
+  }
+  const account=browser({url:'https://travel.example/login'});
+  account.run("state.user={id:'u',username:'traveler',role:'user'};applyLocationRoute()");await account.run('render()');
+  assert.equal(account.location.pathname,'/account');assert.match(account.node('#app').innerHTML,/你好，traveler/);
+  account.run("navigate('ops')");await new Promise(resolve=>setImmediate(resolve));assert.equal(account.location.pathname,'/plan');
 });
 
 test('proxy HTML and connection failures produce understandable request errors', async () => {
@@ -254,49 +296,75 @@ function toolsBrowser({handler}={}){
   b.sent=sent;
   return b;
 }
-function simulationBrowser(fetch){
+function controlsBrowser(fetch){
   const b=browser({fetch});
-  b.run("state.trip="+JSON.stringify(toolsTrip)+";state.user={id:'admin',username:'admin',role:'admin'};state.session={id:'sim-session',day:1,current_index:0,status:'normal',model_consent:true};state.page='journey';state.journalTrip=state.trip.id;state.sensor={hr:75,cadence:95};");
+  b.run("state.trip="+JSON.stringify(toolsTrip)+";state.user={id:'admin',username:'admin',role:'admin'};state.session={id:'control-session',day:1,current_index:0,status:'normal',model_consent:true};state.page='journey';state.journalTrip=state.trip.id;state.sensor={hr:75,cadence:95};");
   return b;
 }
-const simulationForm={id:'admin-simulation-form',values:{hr:'110',baseline_hr:'70',cadence:'72',baseline_cadence:'100',duration_s:'200',status:'rest',use_jev:'on'}};
-const simulationReply={status:'rest',require_confirm:false,reason:'就地休息',simulation_result:{status:'rest',rule_status:'rest',reason:'模拟疲劳',features:{hr_vs_baseline_pct:57,cadence_change_pct:-28,duration_s:200},model_requested:true,model_reference:{status:'mild_fatigue',confidence:.8}}};
-test('custom journey panel is admin-only, accepts custom readings and restores real device readings',async()=>{
+const controlsForm={id:'journey-controls-form',values:{hr:'110',baseline_hr:'70',cadence:'72',baseline_cadence:'100',duration_s:'200'}};
+test('admin journey stays identical apart from a collapsible floating control window; applied values use ordinary feedback',async()=>{
   const calls=[];
-  const b=simulationBrowser(async(url,options)=>{
-    if(url==='/api/session/simulate'){calls.push(JSON.parse(options.body));return {ok:true,json:async()=>simulationReply};}
-    if(url==='/api/session/sim-session')return {ok:true,json:async()=>({id:'sim-session',day:1,current_index:0,status:'rest',model_consent:true})};
+  const b=controlsBrowser(async(url,options)=>{
+    if(url==='/api/feedback'){calls.push(JSON.parse(options.body));return {ok:true,json:async()=>({status:'rest',require_confirm:false,reason:'就地休息'})};}
+    if(url==='/api/session/control-session')return {ok:true,json:async()=>({id:'control-session',day:1,current_index:0,status:'rest',model_consent:true})};
     throw Error('unexpected '+url);
   });
-  await b.run('render()');assert.match(b.node('#app').innerHTML,/id="admin-simulation-form"/);
-  b.handlers.get('#app:input')({target:{dataset:{simulationField:'hr'},name:'hr',value:'110'}});
-  await b.run('render()');assert.match(b.node('#app').innerHTML,/name="hr"[^>]*value="110"/);
-  assert.match(b.node('#heart-value').innerHTML,/75</,'draft is not applied until submission');
-  await b.handlers.get('#app:submit')({preventDefault(){},target:simulationForm});
-  assert.deepEqual(calls,[{session_id:'sim-session',simulation:{status:'rest',use_jev:true,hr:110,cadence:72,baseline_hr:70,baseline_cadence:100,duration_s:200}}]);
-  assert.match(b.node('#heart-value').innerHTML,/110<small>bpm · 模拟/);assert.match(b.node('#cadence-value').innerHTML,/72<small>步\/分 · 模拟/);
-  assert.match(b.node('#app').innerHTML,/Jev：轻度疲劳 · 置信度 80%/);assert.match(b.node('#sensor-status').textContent,/管理员模拟/);
-  b.run('state.sensor.hr=85;updateSensors()');assert.match(b.node('#heart-value').innerHTML,/110</);
+  b.run("state.user.role='user'");await b.run('render()');const ordinary=b.node('#app').innerHTML;
+  assert.doesNotMatch(ordinary,/journey-controls/);
+  b.run("state.user.role='admin'");await b.run('render()');
+  assert.equal(b.node('#app').innerHTML.replace(/<div class="journey-controls">[\s\S]*$/,''),ordinary);
+  assert.doesNotMatch(b.node('#app').innerHTML,/admin-simulation|仅管理员|模拟|演示/);
+  assert.doesNotMatch(b.node('#app').innerHTML,/id="journey-controls-form"/);
+  await click(b,'toggle-journey-controls');assert.match(b.node('#app').innerHTML,/id="journey-controls-form"/);
+  b.handlers.get('#app:input')({target:{dataset:{controlField:'hr'},name:'hr',value:'110'}});
+  await click(b,'close-journey-controls');await click(b,'toggle-journey-controls');
+  assert.match(b.node('#app').innerHTML,/name="hr"[^>]*value="110"/);assert.match(b.node('#heart-value').innerHTML,/75</);
+  await b.handlers.get('#app:submit')({preventDefault(){},target:controlsForm});
+  assert.equal(calls.length,0,'applying readings must not invoke a separate decision API');
+  assert.equal(b.node('#heart-value').innerHTML,'110<small>bpm</small>');assert.equal(b.node('#cadence-value').innerHTML,'72<small>步/分</small>');
+  assert.doesNotMatch(b.node('#app').innerHTML,/模拟|仅管理员|演示/);
+  await clickNode(b,{dataset:{controlEvent:'state'}});
+  assert.equal(calls[0].feedback_type,'state');assert.equal(calls[0].session_id,'control-session');assert.ok(!('demo'in calls[0]));
+  assert.deepEqual(calls[0].features,{walked_km_today:0,hr_vs_baseline_pct:57,duration_s:200,cadence_change_pct:-28});
+  assert.ok(!('hr'in calls[0].features));
+  for(const trigger of ['tired','hungry','rain'])await clickNode(b,{dataset:{controlEvent:trigger}});
+  assert.deepEqual(calls.map(c=>c.feedback_type),['state','tired','hungry','rain']);
+  await click(b,'controls-unwell');assert.match(b.node('#modal-content').innerHTML,/id="pause-unwell"/);
+  b.run('state.sensor.hr=85;updateSensors()');assert.equal(b.node('#heart-value').innerHTML,'110<small>bpm</small>');
+  await click(b,'use-device-readings');assert.equal(b.node('#heart-value').innerHTML,'85<small>bpm</small>');
   assert.doesNotMatch([...b.stored.values()].join(''),/baseline_hr|baseline_cadence|duration_s/);
-  await click(b,'clear-admin-simulation');assert.match(b.node('#heart-value').innerHTML,/85</);assert.doesNotMatch(b.node('#sensor-status').textContent,/模拟/);
-  b.run("state.user.role='user'");await b.run('render()');assert.doesNotMatch(b.node('#app').innerHTML,/admin-simulation-form/);
-  b.run('state.user=null');await b.run('render()');assert.doesNotMatch(b.node('#app').innerHTML,/admin-simulation-form/);
+  b.run("state.user.role='user'");await b.run('render()');assert.doesNotMatch(b.node('#app').innerHTML,/journey-controls/);
 });
-test('custom simulation prevents duplicate submits, reports failure and ignores a changed session',async()=>{
+test('floating events prevent overlapping requests and ignore results after a session change',async()=>{
   let finish;const requests=[];
-  const b=simulationBrowser(async(url,options)=>{requests.push(url);return new Promise(resolve=>finish=resolve);});
-  const submit=()=>b.handlers.get('#app:submit')({preventDefault(){},target:simulationForm});
-  const pending=submit();await new Promise(resolve=>setImmediate(resolve));
-  await submit();assert.deepEqual(requests,['/api/session/simulate']);assert.match(b.node('#app').innerHTML,/正在判断/);
+  const b=controlsBrowser(async(url,options)=>{requests.push(url);return new Promise(resolve=>finish=resolve);});
+  await click(b,'toggle-journey-controls');
+  const trigger=()=>clickNode(b,{dataset:{controlEvent:'rain'}});
+  const pending=trigger();await new Promise(resolve=>setImmediate(resolve));
+  await trigger();assert.deepEqual(requests,['/api/feedback']);assert.equal(b.run('state.journeyControls.busy'),true);
   finish({ok:false,status:503,json:async()=>({error:'地图服务暂时不可用'})});await pending;
-  assert.match(b.node('#app').innerHTML,/地图服务暂时不可用/);assert.match(b.node('#heart-value').innerHTML,/75</);
-  const second=submit();await new Promise(resolve=>setImmediate(resolve));
+  assert.match(b.node('#app').innerHTML,/地图服务暂时不可用/);assert.equal(b.run('state.journeyControls.busy'),false);
+  const second=trigger();await new Promise(resolve=>setImmediate(resolve));
   b.run("state.session={id:'other-session',day:1,current_index:0,status:'normal'};state.suggestion=null");
-  finish({ok:true,json:async()=>simulationReply});await second;
-  assert.equal(b.run('state.session.id'),'other-session');assert.equal(b.run('state.suggestion'),null);assert.equal(requests.length,2,'old result must not refresh new session');
-  await b.run('render()');assert.equal(b.run('state.adminSimulation.applied'),null);
-  b.run("state.session.status='paused'");await b.run('render()');assert.match(b.node('#app').innerHTML,/无法继续模拟/);
-  await submit();assert.equal(requests.length,2);
+  finish({ok:true,json:async()=>({require_confirm:true,id:'old-suggestion'})});await second;
+  assert.equal(b.run('state.session.id'),'other-session');assert.equal(b.run('state.suggestion'),null);assert.equal(requests.length,2);
+  await b.run('render()');assert.equal(b.run('state.journeyControls.applied'),null);assert.equal(b.run('state.journeyControls.open'),false);
+  b.run("state.session.status='paused'");await trigger();assert.equal(requests.length,2);
+});
+test('manual trend duration uses the same automatic event path as devices and low HR resets the trend',async()=>{
+  const calls=[];
+  const b=controlsBrowser(async(url,options)=>{
+    if(url==='/api/feedback'){calls.push(JSON.parse(options.body));return {ok:true,json:async()=>({status:'rest',require_confirm:false,reason:'请休息'})};}
+    return {ok:true,json:async()=>({id:'control-session',day:1,current_index:0,status:'rest',model_consent:true})};
+  });
+  await b.handlers.get('#app:submit')({preventDefault(){},target:controlsForm});
+  const event=new Event('change');event.detail={hr:60,cadence:100};b.run('sensors').dispatchEvent(event);
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(calls.length,1);assert.equal(calls[0].feedback_type,'hr_high_sustained');assert.equal(calls[0].features.hr_vs_baseline_pct,57);
+  assert.equal(b.node('#heart-value').innerHTML,'110<small>bpm</small>');
+  await b.handlers.get('#app:submit')({preventDefault(){},target:{...controlsForm,values:{...controlsForm.values,hr:'70'}}});
+  assert.equal(b.run('currentFeatures().duration_s'),0);
+  b.run("state.session.ended_at='now'");assert.equal(b.run('controlledReadings()'),null);
 });
 function clickNode(b,button){
   Object.assign(button,{classList:{contains:()=>false}});

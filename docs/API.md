@@ -1,5 +1,7 @@
 # 前后端接口契约
 
+网页使用 `/login`、`/register`、`/plan`、`/trip`、`/journey`、`/report`、`/account`、`/ops`。这些地址返回独立 HTML 入口，接口仍统一位于 `/api` 下；例如网页登录地址是 `/login`，提交凭据的接口是 `/api/auth/login`。`/` 与 `/index.html` 重定向到 `/plan`，旧 `/auth` 重定向到 `/login`，未知页面保持 404。
+
 所有接口在 `/api` 下，同源访问。POST必须发送 `Content-Type: application/json`。登录身份使用 `mx_auth` HttpOnly Cookie；游客使用服务器签发的随机 `mx_owner` HttpOnly Cookie。客户端需要保留 Cookie。JSON最大32KB。错误格式为 `{"error":"说明"}`。
 
 状态码：400参数错误、401未登录或凭据错误、403无权访问、404不存在／不属于当前身份、409状态冲突、413请求太大、415内容类型不支持、429请求频繁、503外部路线服务不可用。
@@ -30,7 +32,6 @@
 | GET | `/session/{id}` | 恢复会话与待确认建议标识 |
 | GET | `/suggestion/{id}` | 读取本人待确认建议 |
 | POST | `/session/state` | 上报派生状态特征 |
-| POST | `/session/simulate` | 仅管理员：自定义心率、步频与状态测试 |
 | POST | `/feedback` | 手动反馈／显式演示事件 |
 | POST | `/session/confirm` | 接受或拒绝建议 |
 | POST | `/session/checkin` | 完成当前节点打卡 |
@@ -83,34 +84,19 @@
 
 `features` 只接受上述字段和 `delay_min`，拒绝原始心率等未声明字段。服务端只保存事件类型和累计步行，特征仅用于当次判断，不持久化。
 
-`/feedback` 使用 `feedback_type` 代替 `trigger`。枚举：`tired`、`hungry`、`rain`、`unwell`；也接受状态枚举 `state`、`hr_high_sustained`、`progress`。雨天事件必须附 `"demo":true`；所有模拟事件也应附该标记。该接口的演示健康特征不发送模型网关。
+`/feedback` 使用 `feedback_type` 代替 `trigger`。枚举：`tired`、`hungry`、`rain`、`unwell`；也接受状态枚举 `state`、`hr_high_sustained`、`progress`。`rain` 表示用户主动反馈下雨，不要求天气 API 核实；只有演示事件附 `"demo":true`。雨天反馈不调用身体状态模型。该接口的演示健康特征不发送模型网关。
 
 普通状态和冷却响应 `require_confirm=false`。需要改线时返回 `id`（建议ID）、`session_id`、`trip_version`、`expires_at`、`reason`、`changes`、`candidate`、`require_confirm=true`。规则没有校准置信度，`confidence=null`。
 
-### 管理员自定义测试
+改线从当前站出发，保留已打卡节点及当前节点，优先从本行程的城市地点快照中选择尚未安排的合适地点：下雨选室内地点，饥饿选餐厅，疲劳选就近短暂停留地点。重新计算地图步行距离、营业与时间窗口及已知费用，疲劳路线不得增加原计划步行量；用户指定终点继续保留。最多验证四个新增候选，候选不可行时可调整已有地点顺序或缩短行程，并在 `reason` 说明原因；没有可行避雨／用餐方案时保持原路线。地点室内属性和座位、开放情况仍需现场核实。
 
-`POST /session/simulate` 仅允许管理员测试自己的进行中会话：
+`changes.added_stops` 和 `skipped_stops` 按新旧路线实际节点差异生成，`moved_stops` 为保留但顺序有变化的地点。只有调序而没有新增时，页面会单独展示“调序”，不会把已有地点算作新增。
 
-```json
-{
-  "session_id": "…",
-  "simulation": {
-    "hr": 100,
-    "baseline_hr": 70,
-    "cadence": 80,
-    "baseline_cadence": 100,
-    "duration_s": 180,
-    "status": "auto",
-    "use_jev": false
-  }
-}
-```
+### 途中悬浮控制窗
 
-心率与心率基线为 25—240 bpm，步频为 0—240 步/分，步频基线为 1—240 步/分，持续时间为 0—86400 秒。派生比例沿用状态接口范围。`status` 支持 `auto`（内置规则）、`normal`、`mild_fatigue`、`rest`（指定测试状态）。心率不足基线 125% 时，偏高持续时间按 0 处理。
+管理员在“途中”通过右下角“调节”打开控制窗，可修改心率、步频及参考设置，或主动触发判断状态、疲劳、饥饿、下雨与不适事件。主页面和普通用户共用同一布局。
 
-返回附带 `demo:true` 和 `simulation_result`：测试状态、`rule_status`（按数值自动判断的状态）、动作、原因、派生特征、`model_requested` 与 `model_reference`。`use_jev:true` 还要求会话已有 `model_consent:true`，仅把派生比例与持续时间发送给 Jev；模型结果用于对照，不覆盖指定状态。服务失败时按规则继续。
-
-模拟测试跳过 5 分钟提醒冷却，也不更新真实提醒的冷却时间；每次成功判断替换待确认建议。模拟数值和派生特征不持久化；模拟建议及其事件保留演示标记。改线仍须通过确认接口。因不适暂停的会话不会被模拟恢复，已结束的会话返回 409。
+“应用读数”只修改本页的读数来源；设备读数与手动读数使用同一个 `sensorFeatures` 函数生成派生特征。事件均走 `/feedback`（自动趋势走同一反馈链路），复用相同规则、Jev 授权、冷却、候选路线与确认流程，不指定身体状态、不附演示标记。控制窗收起后读数继续生效，“使用设备读数”恢复设备输入，切换账号或行程后清空手动读数。服务端只接收派生特征。
 
 ## 确认和打卡
 

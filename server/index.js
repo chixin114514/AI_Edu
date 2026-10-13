@@ -10,7 +10,8 @@ import { createAuth } from './auth.js';
 import { createWatchRelay } from './watch-relay.js';
 import { routeMap } from './maps.js';
 import { pois, byId } from './pois.js';
-import { createPlan, evaluate, simulateState, ensure, HttpError, clock, minutes, schedule, approximateDistance, readPoint, rebuildDay } from './planner.js';
+import { pageRoutes } from '../public/page-routes.js';
+import { createPlan, evaluate, buildReroute, ensure, HttpError, clock, minutes, readPoint, rebuildDay } from './planner.js';
 import { decision, liveMode, providerFlags, providerStatus, probeProvider, resolveLocation, cityOptions, cityRegion, regionOptions, qweatherMinutely, qweatherAlerts, transitRoutes, searchPlaces, openTopoElevations, poeticSummary } from './providers.js';
 import { gcj02ToWgs84, routePoints, buildElevationProfile } from './elevation.js';
 import { JOURNAL_LIMITS, parsePhotoDataUrl, photoUrl, cleanJournalText, entryKey } from './journal.js';
@@ -33,10 +34,15 @@ export function createApp({database=process.env.DATABASE_PATH||'./data/manxing.s
     const send=(value,status=200)=>{res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});res.end(JSON.stringify(value));};
     let lockKey, acquired=false;
     try{
-      const path=new URL(req.url,'http://local').pathname;
+      const url=new URL(req.url,'http://local'),path=url.pathname;
       if(!path.startsWith('/api/')){
         ensure(req.method==='GET'||req.method==='HEAD','方法不支持',405);
-        const file=resolve(root,'.'+(path==='/'?'/index.html':decodeURIComponent(path)));
+        const trimmed=path.replace(/\/+$/,'')||'/';
+        const aliases={'/':'/plan','/index.html':'/plan','/auth':'/login'};
+        const page=Object.entries(pageRoutes).find(([name,route])=>route.path===trimmed||'/pages/'+name+'.html'===trimmed);
+        const redirect=aliases[trimmed]||(page&&path!==page[1].path?page[1].path:null);
+        if(redirect){res.writeHead(302,{Location:redirect+url.search,'Cache-Control':'no-cache'});res.end();return;}
+        const file=resolve(root,'.'+(page?'/pages/'+page[0]+'.html':decodeURIComponent(path)));
         ensure(file.startsWith(root)&&!!mime[extname(file)],'页面不存在',404);
         try{const content=await readFile(file);res.writeHead(200,{'Content-Type':mime[extname(file)],'Cache-Control':'no-cache'});res.end(req.method==='HEAD'?undefined:content);}catch{throw new HttpError(404,'页面不存在');}return;
       }
@@ -77,7 +83,7 @@ export function createApp({database=process.env.DATABASE_PATH||'./data/manxing.s
       if(path==='/api/auth/logout'&&req.method==='POST'){
         watch.revokeOwner(owner);setCookie(auth.logout(cookies,secure));setCookie(guestCookie(randomBytes(24).toString('hex')));return send({user:null});
       }
-      if(path==='/api/ops'||path.startsWith('/api/ops/')||path==='/api/session/simulate'){ensure(user,'请先登录管理员账号',401);ensure(user.role==='admin','仅管理员可使用此功能',403);}
+      if(path==='/api/ops'||path.startsWith('/api/ops/')){ensure(user,'请先登录管理员账号',401);ensure(user.role==='admin','仅管理员可使用此功能',403);}
       const get=(kind,id)=>{ensure(typeof id==='string','缺少标识');const v=store.get(kind,id,owner);ensure(v,'记录不存在',404);return v;};
       const session=()=>{const s=get('session',b.session_id);ensure(!s.ended_at,'行程已结束',409);return s;};
       const put=(kind,v)=>store.put(kind,v,owner);
@@ -232,52 +238,31 @@ export function createApp({database=process.env.DATABASE_PATH||'./data/manxing.s
       }
       if(/^\/api\/suggestion\/[^/]+$/.test(path)&&req.method==='GET')return send(get('suggestion',path.split('/')[3]));
       if(/^\/api\/session\/[^/]+$/.test(path)&&req.method==='GET')return send(get('session',path.split('/')[3]));
-      if((path==='/api/session/state'||path==='/api/feedback'||path==='/api/session/simulate')&&req.method==='POST'){
-        const s=session(),trip=get('trip',s.trip_id),simulation=path==='/api/session/simulate'?simulateState(b.simulation):null,trigger=simulation?'state':b.trigger||b.feedback_type||'state',demo=!!simulation||b.demo===true;
-        if(simulation?.use_jev)ensure(s.model_consent===true,'请在开始漫游时开启AI身体状态判断授权');
+      if((path==='/api/session/state'||path==='/api/feedback')&&req.method==='POST'){
+        const s=session(),trip=get('trip',s.trip_id),trigger=b.trigger||b.feedback_type||'state',demo=b.demo===true;
         ensure(['state','hr_high_sustained','tired','hungry','rain','unwell','progress'].includes(trigger),'触发类型无效');
-        ensure(trigger!=='rain'||b.demo===true,'天气演示必须明确标记');
-        const f=simulation?.features||b.features||{};ensure(f&&typeof f==='object'&&!Array.isArray(f),'状态特征格式无效');
+        const f=b.features||{};ensure(f&&typeof f==='object'&&!Array.isArray(f),'状态特征格式无效');
         const ranges={hr_vs_baseline_pct:[-100,400],duration_s:[0,86400],cadence_change_pct:[-100,400],delay_min:[0,1440],walked_km_today:[0,100]};
         ensure(Object.keys(f).every(k=>ranges[k]),'请仅上传支持的派生特征');
         for(const [k,v]of Object.entries(f))ensure(typeof v==='number'&&Number.isFinite(v)&&v>=ranges[k][0]&&v<=ranges[k][1],'状态特征超出范围');
         if(s.status==='paused'&&trigger!=='unwell')return send({status:'paused',suggestion:'seek_help',reason:'当前行程已暂停，请先处理不适并结束本次行程。',require_confirm:false});
-        let outcome=simulation?.outcome||evaluate(f,trigger);
-        const simulatedModel=simulation?.use_jev?await decision(f,true):null;
-        const reply=value=>{
-          if(!simulation)return send(value);
-          if(!value.require_confirm){s.pending_suggestion=null;s.status=outcome.status;put('session',s);}
-          return send({...value,demo:true,simulation_result:{status:outcome.status,rule_status:simulation.rule.status,action:outcome.action,reason:outcome.reason,features:f,model_requested:simulation.use_jev,model_reference:simulatedModel}});
-        };
+        let outcome=evaluate(f,trigger);
         s.walked_km=Math.max(s.walked_km,f.walked_km_today||0);
         if(outcome.status==='paused'){
           watch.revoke(owner,s.id);s.status='paused';s.pending_suggestion=null;s.events.push({at:new Date().toISOString(),type:'unwell',status:'paused'});put('session',s);return send({...outcome,suggestion:'seek_help',require_confirm:false});
         }
-        if(outcome.action==='continue') {s.status='normal';put('session',s);return reply({...outcome,require_confirm:false});}
-        if(!simulation&&['state','hr_high_sustained','progress'].includes(trigger)&&Date.now()-s.last_suggestion_at<300000)return send({status:s.status,suggestion:'cooldown',reason:'建议冷却中，继续观察。',require_confirm:false});
-        const model=simulation?simulatedModel:await decision(f,s.model_consent&&!demo);
+        if(outcome.action==='continue') {s.status='normal';put('session',s);return send({...outcome,require_confirm:false});}
+        if(['state','hr_high_sustained','progress'].includes(trigger)&&Date.now()-s.last_suggestion_at<300000)return send({status:s.status,suggestion:'cooldown',reason:'建议冷却中，继续观察。',require_confirm:false});
+        const model=await decision(f,s.model_consent&&!demo&&trigger!=='rain');
         // Model cannot override deterministic safety boundaries or mutate the route.
-        const day=trip.days[s.day-1],prefix=day.stops.slice(0,s.current_index+1),remaining=day.stops.slice(s.current_index+1);
-        if(!remaining.length)return reply({status:outcome.status,suggestion:'rest',reason:'已到最后一站，可以就地休息并结束行程。',require_confirm:false});
-        let ids=remaining.slice(0,-1).map(p=>p.id);
-        if(outcome.action==='rain')ids=day.plan_b.stops.filter(p=>!prefix.some(v=>v.id===p.id)).map(p=>p.id);
-        
-        if(trip.poi_catalog){
-          // Dynamic trips may only use their own city's saved POI snapshot.
-          if(outcome.action==='break'){
-            const nearby=trip.poi_catalog.filter(p=>p.category==='美食'&&!prefix.some(v=>v.id===p.id)&&approximateDistance(prefix.at(-1),p)<=1500).sort((a,b)=>approximateDistance(prefix.at(-1),a)-approximateDistance(prefix.at(-1),b))[0];
-            ids=nearby?[nearby.id,...remaining.map(p=>p.id).filter(id=>id!==nearby.id)]:remaining.slice(0,-1).map(p=>p.id);
-          }
-        }else{
-          if(['shorten','break'].includes(outcome.action))ids=['rest-gushan',...ids.filter(id=>id!=='rest-gushan')];
-          if(outcome.action==='break')ids=['lunch-hubin',...remaining.map(p=>p.id).filter(id=>id!=='lunch-hubin')];
-        }
-        let next;
-        try{next=await schedule(ids,{...trip.preferences,budget:Math.max(0,trip.preferences.budget/trip.preferences.days-prefix.reduce((n,p)=>n+(p.price??0),0)),days:1,walk_limit_km:Math.max(0,trip.preferences.walk_limit_km-prefix.reduce((n,p)=>n+p.leg.distance_m,0)/1000)},day.date,minutes(prefix.at(-1).departure)+10,prefix.at(-1),trip.poi_catalog);}catch{throw new HttpError(503,'候选路线计算失败，原行程保持不变');}
-        const stops=[...prefix,...next.stops],distance=stops.reduce((n,p)=>n+p.leg.distance_m,0),cost=stops.reduce((n,p)=>n+p.price,0);
-        if(stops.map(p=>p.id).join()===day.stops.map(p=>p.id).join())return reply({status:outcome.status,suggestion:'rest',reason:'当前约束下没有不同的可行路线，请先就地休息。',require_confirm:false});
-        const change={id:randomUUID(),session_id:s.id,trip_id:trip.id,trip_version:trip.version,day:s.day,status:outcome.status,reason:outcome.reason,confidence:model?.confidence??null,decision_source:model?'规则边界 + '+model.source+'参考':'规则引擎',model_reference:model,require_confirm:true,suggestion:'switch_route',new_route_id:randomUUID(),created_at:new Date().toISOString(),expires_at:new Date(Date.now()+10*60000).toISOString(),changes:{distance_saved_m:day.distance_m-distance,time_saved_min:minutes(day.stops.at(-1).departure)-minutes(stops.at(-1).departure),added_stops:stops.filter(p=>!day.stops.some(v=>v.id===p.id)).map(p=>p.name),skipped_stops:day.stops.filter(p=>!stops.some(v=>v.id===p.id)).map(p=>p.name)},candidate:{...day,stops,distance_m:distance,cost,unknown_cost_count:stops.filter(p=>p.price===null).length,duration_min:minutes(stops.at(-1).departure)-minutes(stops[0].arrival)},demo};
-        put('suggestion',change);s.pending_suggestion=change.id;s.status=outcome.status;if(!simulation)s.last_suggestion_at=Date.now();s.events.push({at:change.created_at,type:trigger,suggestion_id:change.id,demo});put('session',s);return reply(change);
+        const day=trip.days[s.day-1];
+        let planned;
+        try{planned=await buildReroute(trip,s,outcome);}catch{throw new HttpError(503,'候选路线计算失败，原行程保持不变');}
+        outcome={...outcome,reason:planned.reason};
+        if(!planned.candidate)return send({status:outcome.status,suggestion:'rest',reason:outcome.reason,require_confirm:false});
+        const candidate=planned.candidate,stops=candidate.stops,distance=candidate.distance_m;
+        const change={id:randomUUID(),session_id:s.id,trip_id:trip.id,trip_version:trip.version,day:s.day,status:outcome.status,reason:outcome.reason,confidence:model?.confidence??null,decision_source:model?'规则边界 + '+model.source+'参考':'规则引擎',model_reference:model,require_confirm:true,suggestion:'switch_route',new_route_id:randomUUID(),created_at:new Date().toISOString(),expires_at:new Date(Date.now()+10*60000).toISOString(),changes:{distance_saved_m:day.distance_m-distance,time_saved_min:minutes(day.stops.at(-1).departure)-minutes(stops.at(-1).departure),added_stops:stops.filter(p=>!day.stops.some(v=>v.id===p.id)).map(p=>p.name),skipped_stops:day.stops.filter(p=>!stops.some(v=>v.id===p.id)).map(p=>p.name),moved_stops:stops.filter((p,i)=>day.stops.some(v=>v.id===p.id)&&day.stops.findIndex(v=>v.id===p.id)!==i&&i>s.current_index).map(p=>p.name)},candidate,demo};
+        put('suggestion',change);s.pending_suggestion=change.id;s.status=outcome.status;s.last_suggestion_at=Date.now();s.events.push({at:change.created_at,type:trigger,suggestion_id:change.id,demo});put('session',s);return send(change);
       }
       if(path==='/api/session/confirm'&&req.method==='POST'){
         const s=session(),a=get('suggestion',b.suggestion_id),trip=get('trip',s.trip_id);

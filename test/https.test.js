@@ -37,7 +37,8 @@ test('TLS requires both readable matching files; bad configuration never downgra
 test('trusted HTTPS serves UI/API, sets Secure cookies, rejects insecure origins and never serves keys',async t=>{
   const app=createApp({database:':memory:',tls});app.listen(0,'127.0.0.1');await once(app,'listening');
   t.after(()=>new Promise(resolve=>app.close(resolve)));const port=app.address().port;
-  const page=await request(port,'/');assert.equal(page.status,200);assert.match(page.body,/慢行/);
+  const root=await request(port,'/');assert.equal(root.status,302);assert.equal(root.headers.location,'/plan');
+  const page=await request(port,'/plan');assert.equal(page.status,200);assert.match(page.body,/慢行/);
   const config=await request(port,'/api/config');assert.equal(config.status,200);assert.ok(JSON.parse(config.body).providers);
   assert.match(config.headers['set-cookie'][0],/; Secure/);assert.match(config.headers['set-cookie'][0],/HttpOnly/);
   for(const path of ['/certs/server-key.pem','/certs/local-ca.crt','/.env'])assert.equal((await request(port,path)).status,404);

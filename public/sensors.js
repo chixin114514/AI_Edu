@@ -11,6 +11,15 @@ export function parseHeartRate(view){
 // 原生容器：由前台服务保活（mobile/src/keepalive-native.js），数据不断档，
 // 交给过期判断处理即可，否则锁屏走路时心率趋势会被白白丢掉。
 const backgroundIsPaused=()=>document.hidden&&!globalThis.__manxingKeepBackgroundTrends;
+export function sensorFeatures({hr,baseline,cadence,cadenceBaseline,highSince,totalSteps=0},now=Date.now()){
+  const result={walked_km_today:Math.round(totalSteps*.00065*100)/100};
+  if(hr&&baseline&&cadence!=null&&cadenceBaseline){
+    result.hr_vs_baseline_pct=Math.round((hr/baseline-1)*100);
+    result.duration_s=highSince!=null?Math.max(0,Math.floor((now-highSince)/1000)):0;
+    result.cadence_change_pct=Math.round((cadence/cadenceBaseline-1)*100);
+  }
+  return result;
+}
 export class Sensors extends EventTarget{
   constructor(){super();this.connectionRevision=0;this.source=null;this.watchStatus=null;this.watchSequence=0;this.watch=new WatchLink(v=>this.receiveWatch(v));this.hr=null;this.baseline=null;this.samples=[];this.steps=[];this.cadence=null;this.totalSteps=0;this.calibrating=false;this.highSince=null;this.lastPeak=0;this.motionActive=false;this.lastMotion=0;this.position=null;this.onMotion=this.onMotion.bind(this);this.hidden=()=>{if(!document.hidden)return;if(this.source==='watch'){this.watchStatus='background';this.watchSampleAfter=Date.now();}if(globalThis.__manxingKeepBackgroundTrends)return;this.hr=null;this.baseline=null;this.lastHr=null;this.highSince=null;this.steps=[];this.cadence=null;this.samples=[];this.calibrating=false;this.emit(this.source||this.motionActive?'页面切到后台，心率和步频会重新统计':undefined);};document.addEventListener('visibilitychange',this.hidden);this.timer=setInterval(()=>{const now=Date.now();if(this.lastHr&&now-this.lastHr>(this.source==='watch'?20000:10000)){this.hr=null;this.highSince=null;this.samples=[];if(this.source==='watch'&&this.watchStatus==='live')this.watchStatus='waiting_for_sample';}if(this.lastMotion&&now-this.lastMotion>5000)this.cadence=null;this.steps=this.steps.filter(t=>t>now-60000);this.emit();},2000);}
   emit(message){this.dispatchEvent(new CustomEvent('change',{detail:{hr:this.hr,baseline:this.baseline,cadence:this.cadence,steps:this.totalSteps,motionActive:this.motionActive,connected:this.source==='watch'?this.watchStatus==='live':!!this.device?.gatt?.connected,source:this.source,watchStatus:this.watchStatus,calibrating:this.calibrating,position:this.position,message}}));}
@@ -78,9 +87,7 @@ export class Sensors extends EventTarget{
     this.position={lat:position.coords.latitude,lng:position.coords.longitude,accuracy:position.coords.accuracy,coordinate_system:'WGS84'};this.emit();return this.position;
   }
   features(){
-    const result={walked_km_today:Math.round(this.totalSteps*.00065*100)/100};
-    if(this.hr&&this.baseline&&this.cadence!==null&&this.cadenceBaseline){result.hr_vs_baseline_pct=Math.round((this.hr/this.baseline-1)*100);result.duration_s=this.highSince?Math.floor((Date.now()-this.highSince)/1000):0;result.cadence_change_pct=Math.round((this.cadence/this.cadenceBaseline-1)*100);}
-    return result;
+    return sensorFeatures(this);
   }
   stop(){this.disconnect();window.removeEventListener('devicemotion',this.onMotion);this.motionActive=false;this.hr=null;this.cadence=null;this.position=null;this.steps=[];this.totalSteps=0;this.cadenceBaseline=null;this.emit();}
 }

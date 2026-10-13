@@ -327,21 +327,62 @@ async function annotateStops(days,prefs,catalog,limitations){
   }
   return result.explanation;
 }
-export function simulateState(input){
-  ensure(input&&typeof input==='object'&&!Array.isArray(input),'模拟数据格式无效');
-  const ranges={hr:[25,240],baseline_hr:[25,240],cadence:[0,240],baseline_cadence:[1,240],duration_s:[0,86400]};
-  ensure(Object.keys(input).every(k=>Object.hasOwn(ranges,k)||['status','use_jev'].includes(k)),'模拟数据包含不支持的字段');
-  for(const [key,[min,max]]of Object.entries(ranges))ensure(typeof input[key]==='number'&&Number.isFinite(input[key])&&input[key]>=min&&input[key]<=max,'请填写有效的心率、步频、基线与持续时间');
-  ensure(['auto','normal','mild_fatigue','rest'].includes(input.status),'模拟状态无效');
-  ensure(typeof input.use_jev==='boolean','请明确是否调用Jev');
-  const features={hr_vs_baseline_pct:Math.round((input.hr/input.baseline_hr-1)*100),cadence_change_pct:Math.round((input.cadence/input.baseline_cadence-1)*100),duration_s:input.hr>=input.baseline_hr*1.25?input.duration_s:0};
-  const rule=evaluate(features,'state');
-  const forced={normal:{status:'normal',action:'continue',reason:'管理员模拟正常状态，保留当前行程。'},mild_fatigue:{status:'mild_fatigue',action:'shorten',reason:'管理员模拟轻度疲劳，建议缩短后续路线。'},rest:{status:'rest',action:'shorten',reason:'管理员模拟需要休息，建议缩短后续路线并休息。'}};
-  return {features,rule,outcome:input.status==='auto'?rule:forced[input.status],use_jev:input.use_jev};
+// 从当前站继续编排，优先加入未安排的适合地点，再按地图耗时检查可行性。
+// 候选只取本行程的城市快照；演示行程才使用本地样本。
+export async function buildReroute(trip,session,outcome){
+  const day=trip.days[session.day-1],prefix=day.stops.slice(0,session.current_index+1),anchor=prefix.at(-1);
+  if(!anchor||session.current_index>=day.stops.length)return {candidate:null,reason:'今天的节点已全部完成，可以结束漫游。'};
+  const remaining=day.stops.slice(session.current_index+1).filter(p=>p.id!=='destination');
+  const destination=day.stops.slice(session.current_index+1).find(p=>p.id==='destination');
+  const catalog=[...new Map([...(trip.poi_catalog??(trip.data_mode==='live'?[]:pois)),...day.stops].map(p=>[p.id,p])).values()];
+  const rain=outcome.action==='rain',food=outcome.action==='break',rest=outcome.action==='shorten'&&outcome.status!=='behind_schedule';
+  const suitable=p=>p.id!=='destination'&&(rain?p.indoor===true:food?p.category==='美食':rest?(p.category==='休息'||p.category==='美食'||p.indoor===true)&&p.slope!=='high':false);
+  const allPlanned=trip.days.flatMap(d=>d.stops);
+  const samePlace=(a,b)=>a.id===b.id||(a.name===b.name&&approximateDistance(a,b)<100);
+  const radius=rest?1500:food?2000:2500;
+  const priority=p=>rest?(p.category==='休息'?0:p.category==='美食'?1:2):0;
+  const nearby=catalog.filter(p=>suitable(p)&&approximateDistance(anchor,p)<=radius&&!allPlanned.some(s=>samePlace(s,p)))
+    .sort((a,b)=>priority(a)-priority(b)||approximateDistance(anchor,a)-approximateDistance(anchor,b)).slice(0,4);
+  const usedWalk=prefix.reduce((sum,p)=>sum+p.leg.distance_m,0),usedCost=prefix.reduce((sum,p)=>sum+(p.price??0),0);
+  const prefs={...trip.preferences,days:1,budget:Math.max(0,trip.preferences.budget/trip.preferences.days-usedCost),walk_limit_km:Math.max(0,trip.preferences.walk_limit_km-usedWalk/1000)};
+  const startAt=minutes(anchor.departure)+10;
+  const assemble=async(wanted,replacement)=>{
+    const local=new Map(catalog.map(p=>[p.id,p]));
+    if(replacement)local.set(replacement.id,rest?{...replacement,duration_min:Math.min(30,replacement.duration_min)}:replacement);
+    let suffix=await schedule([...new Set(wanted)],prefs,day.date,startAt,anchor,[...local.values()]);
+    if(replacement&&(!suffix.stops.some(p=>p.id===replacement.id)||suffix.stops[0]?.id!==replacement.id||suffix.stops[0].leg.distance_m>radius))return null;
+    if(destination){
+      try{suffix=await appendDestination(suffix.stops.length?suffix:{...suffix,stops:[anchor]},destination);}
+      catch(error){if(error instanceof HttpError)return null;throw error;}
+    }
+    // appendDestination 需要起点，空后缀时仅用当前站计算回程，随后移除重复站。
+    const tail=suffix.stops.filter(p=>p.id!==anchor.id),stops=[...prefix,...tail];
+    const distance=stops.reduce((sum,p)=>sum+p.leg.distance_m,0),cost=stops.reduce((sum,p)=>sum+(p.price??0),0);
+    if(distance>trip.preferences.walk_limit_km*1000||cost>trip.preferences.budget/trip.preferences.days||minutes(stops.at(-1).departure)>minutes(trip.preferences.end_time))return null;
+    if(rest&&distance>day.distance_m)return null;
+    if(stops.map(p=>p.id).join()===day.stops.map(p=>p.id).join())return null;
+    return {...day,stops,skipped:suffix.skipped,distance_m:distance,cost,unknown_cost_count:stops.filter(p=>p.price===null).length,duration_min:minutes(stops.at(-1).departure)-minutes(stops[0].arrival)};
+  };
+  const keep=rain?remaining.filter(p=>p.indoor===true):outcome.action==='shorten'?remaining.slice(0,-1):remaining;
+  for(const replacement of nearby){
+    const candidate=await assemble([replacement.id,...keep.map(p=>p.id)],replacement);
+    if(candidate)return {candidate,reason:outcome.reason+(rest?' 新增就近短暂停留地点，是否有座位及开放情况请到店核实。':'')};
+    // 疲劳时优先保留就近休整，避免继续串联原景点使步行反而增加。
+    if(rest&&keep.length){const shorter=await assemble([replacement.id],replacement);if(shorter)return {candidate:shorter,reason:outcome.reason+' 新增就近短暂停留地点，是否有座位及开放情况请到店核实。'};}
+  }
+  const existing=remaining.filter(p=>suitable(p)&&approximateDistance(anchor,p)<=radius).sort((a,b)=>approximateDistance(anchor,a)-approximateDistance(anchor,b))[0];
+  const fallback=existing?[existing.id,...keep.filter(p=>p.id!==existing.id).map(p=>p.id)]:keep.map(p=>p.id);
+  if(food&&!existing)return {candidate:null,reason:'附近未找到满足时间和步行约束的餐饮替代地点，原路线保持不变。'};
+  if(rain&&!fallback.length)return {candidate:null,reason:'附近未找到满足约束的室内替代地点，原路线保持不变。建议先就近避雨。'};
+  let candidate=await assemble(fallback);
+  const hasExisting=existing&&candidate?.stops.some(p=>p.id===existing.id);
+  if((food&&!hasExisting)||(rain&&!candidate?.stops.slice(prefix.length).some(p=>p.indoor===true)))candidate=null;
+  const note=hasExisting?'未找到可新增的合适地点，优先安排原路线已有的'+(food?'餐厅':rain?'室内地点':'休整地点')+'。':rest?'未找到可新增的就近休整地点，本次仅缩短后续路线。':'';
+  return {candidate,reason:candidate?outcome.reason+(note?' '+note:''):'当前时间、步行和预算约束下没有可行的替代路线，原路线保持不变。'};
 }
 export function evaluate(features={},trigger){
   if(trigger==='unwell')return {status:'paused',action:'seek_help',reason:'您主动报告不适。请停止游览、到安全位置休息，并向身边的人或当地紧急服务寻求帮助。'};
-  if(trigger==='rain')return {status:'weather_change',action:'rain',reason:'天气变化演示：切换到室内候选节点，减少户外停留。'};
+  if(trigger==='rain')return {status:'weather_change',action:'rain',reason:'为避雨，建议切换到室内候选节点，减少户外停留。'};
   if(trigger==='hungry')return {status:'rest',action:'break',reason:'您希望用餐，建议先安排一段休息与用餐时间。'};
   if(trigger==='tired')return {status:'mild_fatigue',action:'shorten',reason:'您选择了“轻松一点”，建议减少后续节点并延长休息。'};
   if((features.hr_vs_baseline_pct??0)>=25&&(features.duration_s??0)>=180&&(features.cadence_change_pct??0)<=-15)return {status:'rest',action:'shorten',reason:'心率相对基线上升且步频持续下降，建议缩短后续路线并休息。这只是节奏提示，不是医学判断。'};

@@ -14,28 +14,26 @@ function setup(t,handler){
 const response=(body,status=200)=>new Response(JSON.stringify(body),{status,headers:{'Content-Type':'application/json'}});
 const goodJev=()=>({model:'jev-1.13.0',answers:{travel_state:{type:'choice',choice:'rest',probabilities:{normal:.05,mild_fatigue:.1,rest:.85},confidence:.8}}});
 
-test('admin simulation optionally compares Jev using derived features and cannot override an emergency',async t=>{
-  const payloads=[];let resolveModel;
-  setup(t,async(url,init)=>{assert.equal(String(url),'https://api.typesafe.ai/v1/systemone');payloads.push(JSON.parse(init.body));if(resolveModel===true)return new Promise(resolve=>{resolveModel=resolve;});return response(goodJev());});
+test('admin and ordinary state inputs use the same Jev call, rule outcome and cooldown',async t=>{
+  const payloads=[];
+  setup(t,async(url,init)=>{assert.equal(String(url),'https://api.typesafe.ai/v1/systemone');payloads.push(JSON.parse(init.body));return response(goodJev());});
   process.env.DATA_MODE='demo';
-  const app=createApp({database:':memory:'});t.after(()=>app.emit('close'));let cookie='';
-  const request=async(path,data)=>{const result=await dispatch(app,'/api'+path,data,{cookie});cookie=mergeCookies(cookie,result.headers['set-cookie']);return result;};
-  await request('/auth/login',{username:'admin',password:'admin'});
-  const {body:trip}=await request('/trip/plan',{city:'杭州',date:'2026-10-13',days:1,budget:300,walk_limit_km:6,interests:['自然'],start_time:'09:00',end_time:'18:00',companion:'独自',model_consent:false});
-  const {body:s}=await request('/session/start',{trip_id:trip.id,day:1,model_consent:true});
-  const simulation={hr:100,baseline_hr:70,cadence:80,baseline_cadence:100,duration_s:180,status:'normal',use_jev:false};
-  const run=()=>request('/session/simulate',{session_id:s.id,simulation});
-  assert.equal((await run()).status,200);assert.equal(payloads.length,0);
-  simulation.use_jev=true;
-  const result=await run();assert.equal(result.status,200);assert.equal(result.body.status,'normal');assert.equal(result.body.simulation_result.model_reference.status,'rest');assert.equal(result.body.require_confirm,false);
-  assert.deepEqual(payloads[0].state.features,{hr_vs_baseline_pct:43,cadence_change_pct:-20,duration_s:180});
-  resolveModel=true;const pending=run();
-  while(typeof resolveModel!=='function')await new Promise(resolve=>setImmediate(resolve));
-  assert.equal((await request('/session/simulate',{session_id:s.id,simulation})).status,409,'existing per-owner lock prevents overlapping writes');
-  resolveModel(response(goodJev()));assert.equal((await pending).status,200);
-  await request('/feedback',{session_id:s.id,feedback_type:'unwell'});
-  assert.equal((await request('/session/'+s.id)).body.status,'paused');
-  assert.equal((await run()).body.status,'paused');assert.equal(payloads.length,2,'paused session must not invoke Jev');
+  const app=createApp({database:':memory:'});t.after(()=>app.emit('close'));
+  for(const admin of [false,true]){
+    let cookie='';
+    const request=async(path,data)=>{const result=await dispatch(app,'/api'+path,data,{cookie});cookie=mergeCookies(cookie,result.headers['set-cookie']);return result;};
+    await request(admin?'/auth/login':'/auth/register',admin?{username:'admin',password:'admin'}:{username:'traveler',password:'password123'});
+    const {body:trip}=await request('/trip/plan',{city:'杭州',date:'2026-10-13',days:1,budget:300,walk_limit_km:6,interests:['自然'],start_time:'09:00',end_time:'18:00',companion:'独自',model_consent:false});
+    const {body:s}=await request('/session/start',{trip_id:trip.id,day:1,model_consent:true});
+    const features={hr_vs_baseline_pct:43,cadence_change_pct:-20,duration_s:180};
+    const result=await request('/feedback',{session_id:s.id,feedback_type:'state',features});
+    assert.equal(result.status,200);assert.equal(result.body.status,'rest');assert.equal(result.body.model_reference.status,'rest');assert.equal(result.body.require_confirm,true);assert.equal(result.body.demo,false);
+    assert.equal((await request('/session/state',{session_id:s.id,features})).body.suggestion,'cooldown');
+    await request('/feedback',{session_id:s.id,feedback_type:'unwell'});
+    assert.equal((await request('/session/state',{session_id:s.id,features})).body.status,'paused');
+  }
+  assert.equal(payloads.length,2);
+  for(const payload of payloads)assert.deepEqual(payload.state.features,{hr_vs_baseline_pct:43,cadence_change_pct:-20,duration_s:180});
 });
 
 test('admin map and weather probes make fresh requests even in demo mode and update status',async t=>{

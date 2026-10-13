@@ -2,10 +2,10 @@ import { test } from 'node:test';
 import { dispatch,mergeCookies } from './harness.js';
 import assert from 'node:assert/strict';
 import { createApp } from '../server/index.js';
-import { evaluate, simulateState, minutes } from '../server/planner.js';
-import { parseHeartRate } from '../public/sensors.js';
+import { evaluate, minutes } from '../server/planner.js';
+import { parseHeartRate, sensorFeatures } from '../public/sensors.js';
 const input={city:'杭州',date:'2026-10-13',days:1,budget:300,walk_limit_km:6,interests:['自然','人文'],start_time:'09:00',end_time:'18:00',companion:'独自',model_consent:false};
-const simulation={hr:100,baseline_hr:70,cadence:80,baseline_cadence:100,duration_s:180,status:'auto',use_jev:false};
+
 async function fixture(t){
   const app=createApp({database:':memory:'});t.after(()=>app.emit('close'));let cookie='';
   const request=async(path,data,extra={})=>{const result=await dispatch(app,'/api'+path,data,{cookie,...extra});cookie=mergeCookies(cookie,result.headers['set-cookie']);return result;};
@@ -24,53 +24,29 @@ test('expired suggestions cannot be accepted',async t=>{const {request}=await fi
 test('missing live map credentials never silently produce a demo route',async t=>{const before=process.env.DATA_MODE,key=process.env.AMAP_KEY;try{process.env.DATA_MODE='live';delete process.env.AMAP_KEY;const {request}=await fixture(t);assert.equal((await request('/trip/plan',input)).status,503);}finally{if(before===undefined)delete process.env.DATA_MODE;else process.env.DATA_MODE=before;if(key===undefined)delete process.env.AMAP_KEY;else process.env.AMAP_KEY=key;}});
 test('report reflects actual checkins and suggestion choices, ending is idempotent',async t=>{const {request}=await fixture(t);const {body:p}=await request('/trip/plan',input);const {body:s}=await request('/session/start',{trip_id:p.id,day:1,model_consent:false});await request('/session/checkin',{session_id:s.id,stop_id:p.days[0].stops[0].id});assert.equal((await request('/session/checkin',{session_id:s.id,stop_id:p.days[0].stops[0].id})).status,409);const {body:a}=await request('/feedback',{session_id:s.id,feedback_type:'tired'});await request('/session/confirm',{session_id:s.id,suggestion_id:a.id,accept:false});const end=await request('/session/end',{session_id:s.id});assert.equal((await request('/session/end',{session_id:s.id})).body.ended_at,end.body.ended_at);const r=await request('/trip/'+p.id+'/report');assert.equal(r.body.visited_stops,1);assert.equal(r.body.rejected,1);assert.equal(r.body.finished,true);});
 test('admin can read provider status and prototype job endpoint is removed',async t=>{const {request}=await fixture(t);await request('/auth/login',{username:'admin',password:'admin'});const r=await request('/ops');assert.equal(r.status,200);assert.deepEqual(Object.keys(r.body).sort(),['provider_status','providers']);assert.equal((await request('/ops/run',{job:'poi_audit'})).status,404);});
-test('static shell and offline files served, traversal and secrets blocked',async t=>{const app=createApp({database:':memory:'});t.after(()=>app.emit('close'));for(const p of ['/','/app.js','/style.css','/sensors.js','/sw.js','/lake.svg'])assert.equal((await dispatch(app,p)).status,200);for(const p of ['/.env','/../server/index.js','/%2e%2e/server/index.js'])assert.equal((await dispatch(app,p)).status,404);});
+test('static shell and offline files served, traversal and secrets blocked',async t=>{const app=createApp({database:':memory:'});t.after(()=>app.emit('close'));for(const p of ['/plan','/app.js','/style.css','/sensors.js','/sw.js','/lake.svg'])assert.equal((await dispatch(app,p)).status,200);for(const p of ['/.env','/../server/index.js','/%2e%2e/server/index.js'])assert.equal((await dispatch(app,p)).status,404);});
 
-test('custom readings use baselines, duration and explicit state independently',()=>{
-  const auto=simulateState(simulation);assert.equal(auto.rule.status,'rest');assert.deepEqual(auto.features,{hr_vs_baseline_pct:43,cadence_change_pct:-20,duration_s:180});
-  assert.equal(simulateState({...simulation,duration_s:179}).outcome.status,'normal');
-  assert.equal(simulateState({...simulation,hr:70}).features.duration_s,0);
-  assert.equal(simulateState({...simulation,cadence:100}).outcome.status,'normal');
-  const normal=simulateState({...simulation,status:'normal'});assert.equal(normal.rule.status,'rest');assert.equal(normal.outcome.status,'normal');
-  assert.equal(simulateState({...simulation,hr:70,cadence:100,status:'mild_fatigue'}).outcome.status,'mild_fatigue');
+test('manual and device readings share trend calculation including elapsed time, zero cadence and baseline gaps',()=>{
+  const now=2000000000000;
+  const readings={hr:100,baseline:70,cadence:80,cadenceBaseline:100,highSince:now-180000,totalSteps:1000};
+  assert.deepEqual(sensorFeatures(readings,now),{walked_km_today:.65,hr_vs_baseline_pct:43,cadence_change_pct:-20,duration_s:180});
+  assert.equal(evaluate(sensorFeatures(readings,now),'state').status,'rest');
+  assert.equal(evaluate(sensorFeatures(readings,now-1000),'state').status,'normal');
+  assert.equal(sensorFeatures({...readings,cadence:0},now).cadence_change_pct,-100);
+  assert.equal(sensorFeatures({...readings,highSince:null},now).duration_s,0);
+  assert.deepEqual(sensorFeatures({...readings,baseline:null},now),{walked_km_today:.65});
 });
-test('custom simulation requires admin and ownership and rejects invalid readings',async t=>{
-  const {request,foreign}=await fixture(t);
-  assert.equal((await request('/session/simulate',{})).status,401);
-  await request('/auth/register',{username:'traveler',password:'password123'});
-  assert.equal((await request('/session/simulate',{})).status,403);
-  await request('/auth/login',{username:'admin',password:'admin'});
-  const {body:p}=await request('/trip/plan',input),{body:s}=await request('/session/start',{trip_id:p.id,day:1,model_consent:false});
-  for(const invalid of [{hr:0},{hr:'100'},{cadence:-1},{baseline_cadence:0},{baseline_hr:0},{duration_s:-1},{status:'paused'},{status:'bogus'},{use_jev:'yes'},{raw_hr:[100]}]){
-    assert.equal((await request('/session/simulate',{session_id:s.id,simulation:{...simulation,...invalid}})).status,400,JSON.stringify(invalid));
-  }
-  assert.equal((await request('/session/simulate',{session_id:s.id,simulation:{...simulation,use_jev:true}})).status,400);
-  assert.equal((await request('/session/simulate',{session_id:'foreign',simulation})).status,404);
-  assert.equal((await foreign('/session/'+s.id)).status,404);
-});
-test('admin simulation bypasses cooldown, keeps raw readings transient and requires confirmation',async t=>{
+test('admin uses ordinary state and feedback endpoints with the same cooldown and confirmation',async t=>{
   const {request}=await fixture(t);await request('/auth/login',{username:'admin',password:'admin'});
   const {body:p}=await request('/trip/plan',input),{body:s}=await request('/session/start',{trip_id:p.id,day:1,model_consent:false});
-  await request('/session/state',{session_id:s.id,features:{hr_vs_baseline_pct:30,duration_s:180,cadence_change_pct:-20}});
-  const before=(await request('/session/'+s.id)).body;
-  const run=async extra=>{const result=await request('/session/simulate',{session_id:s.id,simulation:{...simulation,...extra}});assert.equal(result.status,200);return result.body;};
-  const a=await run({}),b=await run({status:'mild_fatigue'});
-  assert.equal(a.require_confirm,true);assert.equal(a.demo,true);assert.equal(a.simulation_result.status,'rest');assert.equal(b.require_confirm,true);assert.notEqual(a.id,b.id);
-  assert.equal((await request('/session/confirm',{session_id:s.id,suggestion_id:a.id,accept:true})).status,409);
+  const features={hr_vs_baseline_pct:43,cadence_change_pct:-20,duration_s:180};
+  const a=await request('/feedback',{session_id:s.id,feedback_type:'state',features});
+  assert.equal(a.status,200);assert.equal(a.body.status,'rest');assert.equal(a.body.demo,false);assert.equal(a.body.require_confirm,true);
+  assert.doesNotMatch(a.body.reason,/模拟|管理员|演示/);
+  assert.equal((await request('/session/state',{session_id:s.id,features})).body.suggestion,'cooldown');
   assert.equal((await request('/trip/'+p.id)).body.version,1);
-  const saved=(await request('/session/'+s.id)).body;
-  assert.equal(saved.last_suggestion_at,before.last_suggestion_at);assert.ok(saved.events.at(-1).demo);
-  assert.doesNotMatch(JSON.stringify(saved),/baseline_hr|baseline_cadence|hr_vs_baseline_pct|duration_s/);
-  const stored=(await request('/suggestion/'+b.id)).body;
-  assert.doesNotMatch(JSON.stringify(stored),/baseline_hr|baseline_cadence|hr_vs_baseline_pct|duration_s/);
-  const normal=await run({status:'normal'});assert.equal(normal.simulation_result.rule_status,'rest');assert.equal(normal.status,'normal');assert.equal(normal.require_confirm,false);
-  assert.equal((await request('/session/'+s.id)).body.pending_suggestion,null);
-  assert.equal((await request('/session/confirm',{session_id:s.id,suggestion_id:b.id,accept:true})).status,409);
-  const c=await run({status:'rest'});
-  assert.equal((await request('/session/confirm',{session_id:s.id,suggestion_id:c.id,accept:true})).body.trip.version,2);
+  const accepted=await request('/session/confirm',{session_id:s.id,suggestion_id:a.body.id,accept:true});assert.equal(accepted.body.trip.version,2);
   await request('/feedback',{session_id:s.id,feedback_type:'unwell'});
-  assert.equal((await run({status:'normal'})).status,'paused');
-  assert.equal((await request('/session/'+s.id)).body.status,'paused');
-  await request('/session/end',{session_id:s.id});
-  assert.equal((await request('/session/simulate',{session_id:s.id,simulation})).status,409);
+  assert.equal((await request('/feedback',{session_id:s.id,feedback_type:'state',features})).body.status,'paused');
+  assert.equal((await request('/session/simulate',{session_id:s.id})).status,404);
 });

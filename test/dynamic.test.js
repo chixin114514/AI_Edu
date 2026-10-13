@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createApp } from '../server/index.js';
 import { normalizePoi, normalizeRegions } from '../server/providers.js';
+import { buildReroute, evaluate } from '../server/planner.js';
 import { dispatch } from './harness.js';
 const input={city:'上海',date:'2026-10-15',days:1,budget:300,walk_limit_km:6,interests:['自然','人文'],start_time:'09:00',end_time:'18:00',companion:'独自',model_consent:false,start_poi:'auto'};
 function setup(t,{empty=false,mapFailure=false,huge=false,district=false}={}){
@@ -40,10 +41,69 @@ test('two-day generated routes have no duplicate main stops and obey limits',asy
 test('city rerouting stays in the same catalog and requires confirmation',async t=>{
  const {request}=setup(t),p=(await request('/trip/plan',input)).body,s=(await request('/session/start',{trip_id:p.id,day:1,model_consent:false})).body;
  for(const trigger of ['tired','hungry','rain']){
-  const r=await request('/feedback',{session_id:s.id,feedback_type:trigger,demo:trigger==='rain'});assert.equal(r.status,200);assert.equal(r.body.require_confirm,true);assert.ok(r.body.candidate.stops.every(p=>p.id.startsWith('SH')));assert.equal((await request('/trip/'+p.id)).body.version,1);
+  const r=await request('/feedback',{session_id:s.id,feedback_type:trigger,demo:false});assert.equal(r.status,200);assert.equal(r.body.require_confirm,true);assert.equal(r.body.demo,false);assert.doesNotMatch(r.body.reason,/演示/);assert.ok(r.body.candidate.stops.every(p=>p.id.startsWith('SH')));assert.equal((await request('/trip/'+p.id)).body.version,1);
+  const added=r.body.candidate.stops.filter(stop=>!p.days[0].stops.some(old=>old.id===stop.id));
+  assert.ok(added.length>0,trigger+' must add a suitable unused place when one fits');
+  assert.deepEqual(r.body.changes.added_stops,added.map(stop=>stop.name));
+  assert.equal(new Set(r.body.candidate.stops.map(stop=>stop.id)).size,r.body.candidate.stops.length);
+  assert.deepEqual(r.body.candidate.stops[0],p.days[0].stops[0]);
+  if(trigger==='rain')assert.ok(r.body.candidate.stops.slice(1).every(stop=>stop.indoor));
+  if(trigger==='hungry')assert.equal(added[0].category,'美食');
+  if(trigger==='tired')assert.ok(r.body.changes.distance_saved_m>=0,'fatigue must not increase walking');
   await request('/session/confirm',{session_id:s.id,suggestion_id:r.body.id,accept:false});
  }
  const a=(await request('/feedback',{session_id:s.id,feedback_type:'tired'})).body;const accepted=(await request('/session/confirm',{session_id:s.id,suggestion_id:a.id,accept:true})).body;assert.equal(accepted.trip.version,2);assert.equal(accepted.trip.days[0].unknown_cost_count,accepted.trip.days[0].stops.length);
+});
+test('rain rerouting finds unused indoor POIs beyond an overlapping Plan B and rejects closed alternatives',async t=>{
+ const {request}=setup(t),trip=(await request('/trip/plan',input)).body;
+ trip.days[0].plan_b={stops:trip.days[0].stops};
+ const session={day:1,current_index:0},outcome=evaluate({},'rain');
+ const found=await buildReroute(trip,session,outcome);
+ assert.ok(found.candidate.stops.some(stop=>!trip.days[0].stops.some(old=>old.id===stop.id)));
+ assert.ok(found.candidate.stops.slice(1).every(stop=>stop.indoor));
+ for(const poi of trip.poi_catalog)if(poi.indoor)poi.closed_days=[4];
+ const closed=await buildReroute(trip,session,outcome);
+ assert.equal(closed.candidate,null,'cannot replace outdoor stops with an empty itinerary when indoor places are closed');
+ assert.match(closed.reason,/原路线保持不变/);
+});
+test('hungry rerouting reorders an existing restaurant only if no unused meal fits; no restaurant preserves the route',async t=>{
+ const {request}=setup(t),trip=(await request('/trip/plan',input)).body;
+ const before=structuredClone(trip.days[0]);
+ const alreadyPlanned=new Set(before.stops.map(stop=>stop.id));
+ trip.poi_catalog=trip.poi_catalog.filter(p=>p.category!=='美食'||alreadyPlanned.has(p.id));
+ const found=await buildReroute(trip,{day:1,current_index:0},evaluate({},'hungry'));
+ assert.ok(found.candidate);assert.equal(found.candidate.stops[1].category,'美食');
+ assert.ok(found.candidate.stops.every(stop=>alreadyPlanned.has(stop.id)));
+ assert.match(found.reason,/原路线已有的餐厅/);
+ assert.deepEqual(trip.days[0],before,'building a candidate must not mutate the stored trip');
+ trip.poi_catalog=trip.poi_catalog.filter(p=>p.category!=='美食');
+ trip.days[0].stops=trip.days[0].stops.filter(p=>p.category!=='美食');
+ const none=await buildReroute(trip,{day:1,current_index:0},evaluate({},'hungry'));
+ assert.equal(none.candidate,null);assert.match(none.reason,/餐饮替代地点.*原路线保持不变/);
+});
+test('fatigue falls back honestly to shortening when no new rest fits, and keeps current and checked-in stops',async t=>{
+ const {request}=setup(t),trip=(await request('/trip/plan',input)).body;
+ trip.poi_catalog=trip.days[0].stops.filter(p=>!p.indoor&&p.category!=='美食');
+ trip.days[0].stops=trip.poi_catalog;
+ const session={day:1,current_index:1},found=await buildReroute(trip,session,evaluate({},'tired'));
+ assert.ok(found.candidate);assert.match(found.reason,/本次仅缩短/);
+ assert.deepEqual(found.candidate.stops.slice(0,2),trip.days[0].stops.slice(0,2));
+ assert.ok(found.candidate.distance_m<=trip.days[0].distance_m);
+ assert.ok(found.candidate.stops.every(stop=>trip.days[0].stops.some(old=>old.id===stop.id)));
+});
+test('rerouting retains the custom destination, actual totals and confirmation semantics',async t=>{
+ const {request}=setup(t),trip=(await request('/trip/plan',{...input,end_point:{name:'测试酒店',lng:121.471,lat:31.23}})).body;
+ const session=(await request('/session/start',{trip_id:trip.id,day:1,model_consent:false})).body;
+ const result=await request('/feedback',{session_id:session.id,feedback_type:'rain'});
+ assert.equal(result.status,200);assert.equal(result.body.require_confirm,true);
+ const candidate=result.body.candidate;
+ assert.equal(candidate.stops.at(-1).id,'destination');assert.equal(candidate.stops.at(-1).name,'测试酒店');
+ assert.equal(candidate.stops.filter(p=>p.id==='destination').length,1);
+ assert.equal(candidate.distance_m,candidate.stops.reduce((sum,p)=>sum+p.leg.distance_m,0));
+ assert.ok(candidate.distance_m<=trip.preferences.walk_limit_km*1000);
+ assert.deepEqual((await request('/trip/'+trip.id)).body.days,trip.days);
+ const accepted=await request('/session/confirm',{session_id:session.id,suggestion_id:result.body.id,accept:true});
+ assert.deepEqual(accepted.body.trip.days[0],candidate);assert.equal(accepted.body.trip.version,2);
 });
 test('no POI or no feasible route never silently falls back to Hangzhou fixtures',async t=>{
  const {request}=setup(t,{empty:true});const r=await request('/trip/plan',input);assert.equal(r.status,422);assert.deepEqual((await request('/route-packs')).body.packs,[]);
