@@ -163,7 +163,6 @@ public/
   index.html       默认规划入口（自动生成）
   page-routes.js   页面路径与元信息
   style.css        响应式界面
-  glass.js         底部标签栏的玻璃折射（按标签栏尺寸生成位移图，仅 Blink 内核启用）
   app.js           页面交互、History 导航、API联动、确认与报告
   sensors.js       心率／运动／定位的端侧处理
   sw.js            离线静态页面缓存
