@@ -820,3 +820,43 @@ test('一天满 8 站时不再提交；旧数据里超过 24 点的时间显示�
   assert.match(late,/<time>次日 00:35<\/time>/);
   assert.doesNotMatch(late,/24:35/);
 });
+
+// ---------------- 标签栏：当前页标记、进场动画与加载提示 ----------------
+
+test('切换标签会标记当前页并播放一次进场动画，同一页内的重绘不播',async()=>{
+  const b=editBrowser();
+  const played=[];
+  b.node('#app').classList={add:name=>played.push(name),remove(){},toggle(){},contains:()=>false};
+  b.run("navigate('trip')");
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(b.node('.main-nav').dataset.active,'trip','底部标签栏靠这个标记移动当前标签的底块');
+  assert.deepEqual(played,['page-enter']);
+  // 页面内的操作（比如上移一站后重绘）不应该让整页再闪一次。
+  await b.run('render()');
+  assert.deepEqual(played,['page-enter']);
+  // 点的是当前所在的标签：不换页，也不重播。
+  b.run("navigate('trip')");
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.deepEqual(played,['page-enter']);
+  b.run("navigate('plan')");
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(b.node('.main-nav').dataset.active,'plan');
+  assert.deepEqual(played,['page-enter','page-enter']);
+});
+
+test('手记页等接口返回期间保留原来的内容，不立刻换成加载提示',async()=>{
+  let finish;
+  const report={finished:false,visited_stops:1,total_stops:3,walked_km:0.8,planned_distance_km:3.1,accepted:0,rejected:0,events:[],preference_note:'',data_mode:'live',summary:null,journal:[]};
+  const b=editBrowser({handler:async url=>url==='/api/trip/trip-edit/report'?new Promise(resolve=>{finish=()=>resolve({ok:true,json:async()=>report});}):null});
+  await b.run("(async()=>{state.page='trip';await render();})()");
+  assert.match(b.node('#app').innerHTML,/行程安排/);
+  b.run("navigate('report')");
+  for(let i=0;i<20&&!finish;i++)await Promise.resolve();
+  assert.equal(b.node('.main-nav').dataset.active,'report','标签先切过去，给出即时反馈');
+  assert.match(b.node('#app').innerHTML,/行程安排/,'接口没回来之前还是上一页的内容');
+  assert.doesNotMatch(b.node('#app').innerHTML,/class="loading"/);
+  finish();
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.match(b.node('#app').innerHTML,/途中发生了什么/);
+  assert.doesNotMatch(b.node('#app').innerHTML,/行程安排/);
+});

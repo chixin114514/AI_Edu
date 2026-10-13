@@ -6,7 +6,7 @@
   --sun:#f5a524; --sun-soft:#fff4d9; --coral:#e85d3d; --coral-soft:#fdeae4;
   --sky:#2f80c9; --sky-soft:#e4f0fb; --violet:#7458cf; --violet-soft:#efebfb;
   --radius:20px; --radius-sm:12px; --shadow:0 1px 2px #1725200a,0 8px 24px #1725200f;
-  --nav-h:64px;
+  --nav-h:76px;
   font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","HarmonyOS Sans SC","Microsoft YaHei",sans-serif;
   font-size:15px; line-height:1.6; color:var(--ink); background:var(--bg); font-synthesis:none;
   -webkit-text-size-adjust:100%;
@@ -51,10 +51,18 @@ ul,ol { margin:0; padding:0; list-style:none; }
 .more-menu-content { position:absolute; top:46px; right:0; z-index:50; width:180px; padding:6px; background:var(--surface); border:1px solid var(--line); border-radius:14px; box-shadow:var(--shadow); }
 .more-menu-content button { display:block; width:100%; text-align:left; border:0; background:none; padding:10px 12px; border-radius:9px; font-size:15px; }
 .more-menu-content button:hover { background:var(--bg); }
-.main-nav { position:fixed; left:0; right:0; bottom:0; z-index:40; display:grid; grid-template-columns:repeat(4,1fr); padding:6px 8px calc(6px + env(safe-area-inset-bottom)); background:#fffffff5; border-top:1px solid var(--line); }
-.main-nav a { text-decoration:none; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:2px; min-height:52px; border:0; background:none; border-radius:14px; color:var(--muted); font-size:12px; font-weight:600; }
+.main-nav { position:fixed; left:12px; right:12px; bottom:calc(10px + env(safe-area-inset-bottom)); z-index:41; display:grid; grid-template-columns:repeat(4,1fr); gap:2px; padding:6px; border-radius:32px; background:#fffffffa; box-shadow:0 12px 32px #17251f2e,0 2px 8px #17251f14,inset 0 0 0 1px #17251f0f; }
+.main-nav a { position:relative; z-index:2; text-decoration:none; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:2px; min-height:52px; border-radius:26px; color:#3d4b44; font-size:12px; font-weight:650; transition:color .2s,transform .16s; }
+.main-nav a:active { transform:scale(.92); }
 .main-nav a .icon { width:24px; height:24px; }
-.main-nav a.active { color:var(--brand); background:var(--brand-soft); }
+/* 当前页由 data-active 决定（各页面入口的 HTML 里已经写好，首屏不用等脚本）。 */
+.main-nav[data-active=plan] a[data-page=plan],.main-nav[data-active=trip] a[data-page=trip],.main-nav[data-active=journey] a[data-page=journey],.main-nav[data-active=report] a[data-page=report] { color:var(--brand-dark); }
+/* 当前标签下面那块底：换页时滑过去，带一点回弹。 */
+.nav-thumb { position:absolute; z-index:1; top:6px; bottom:6px; left:6px; width:calc((100% - 18px)/4); border-radius:26px; background:var(--brand-soft); opacity:0; pointer-events:none; transform:translateX(calc(var(--tab,0)*(100% + 2px))); transition:transform .45s cubic-bezier(.3,1.4,.5,1),opacity .2s; }
+.main-nav[data-active=plan] .nav-thumb { --tab:0; opacity:1; }
+.main-nav[data-active=trip] .nav-thumb { --tab:1; opacity:1; }
+.main-nav[data-active=journey] .nav-thumb { --tab:2; opacity:1; }
+.main-nav[data-active=report] .nav-thumb { --tab:3; opacity:1; }
 main { max-width:1180px; margin:0 auto; padding:16px 16px calc(var(--nav-h) + 40px + env(safe-area-inset-bottom)); min-height:70vh; }
 .loading { padding:90px 16px; text-align:center; color:var(--muted); }
 .loading::before,.spinner { content:""; display:block; width:28px; height:28px; margin:0 auto 14px; border-radius:50%; border:3px solid var(--brand-soft); border-top-color:var(--brand); animation:spin .8s linear infinite; }
@@ -483,9 +491,11 @@ summary { cursor:pointer; }
 @media(min-width:900px) {
   :root { --nav-h:0px; }
   .topbar { height:64px; padding:0 28px; }
-  .main-nav { position:static; display:flex; gap:4px; padding:0; background:none; border:0; }
-  .main-nav a { flex-direction:row; gap:6px; min-height:42px; padding:0 16px; font-size:15px; border-radius:99px; }
+  .main-nav { top:0; bottom:auto; left:50%; right:auto; transform:translateX(-50%); height:64px; display:flex; align-items:center; gap:4px; padding:0; border-radius:0; background:none; box-shadow:none; }
+  .main-nav a { flex-direction:row; gap:6px; min-height:42px; padding:0 14px; font-size:15px; border-radius:99px; }
   .main-nav a .icon { width:20px; height:20px; }
+  .main-nav[data-active=plan] a[data-page=plan],.main-nav[data-active=trip] a[data-page=trip],.main-nav[data-active=journey] a[data-page=journey],.main-nav[data-active=report] a[data-page=report] { background:var(--brand-soft); }
+  .nav-thumb { display:none; }
   main { padding:28px 28px 60px; }
   .plan-layout { grid-template-columns:minmax(0,1.5fr) minmax(0,1fr); gap:24px; }
   .plan-layout.solo { grid-template-columns:minmax(0,720px); justify-content:center; }
@@ -531,34 +541,42 @@ body::before { content:""; position:fixed; inset:0; z-index:-1; pointer-events:n
 @supports ((-webkit-backdrop-filter:blur(1px)) or (backdrop-filter:blur(1px))) {
   .card,.stat,.recent-item,.lib-item { background:#ffffffeb; }
   .card .stat,.note-card,.summary-card { box-shadow:none; }
-  .topbar { background:none; border-bottom:0; }
-  /* 模糊放在伪元素上：.topbar 自己一旦带 backdrop-filter，里面 position:fixed 的标签栏就会被它框住。 */
-  .topbar::before { content:""; position:absolute; inset:0; z-index:-1; background:#f4f6f18c; -webkit-backdrop-filter:blur(18px) saturate(1.7); backdrop-filter:blur(18px) saturate(1.7); box-shadow:inset 0 -1px 0 #ffffffb3,0 1px 0 #17251f0f; }
+  /* 玻璃直接加在元素自己身上。早先放在 z-index 为负的伪元素里，WebKit 会把元素内容拆到单独的前景层，滚动时图标容易丢。 */
+  .topbar { background:#f4f6f1a6; border-bottom-color:#ffffff99; -webkit-backdrop-filter:blur(18px) saturate(1.7); backdrop-filter:blur(18px) saturate(1.7); }
   .account-button,.more-menu>summary { background:#ffffff99; border-color:#ffffffbf; }
-  .more-menu-content,.journey-controls-panel { background:#ffffffcc; border-color:#ffffffbf; -webkit-backdrop-filter:blur(22px) saturate(1.7); backdrop-filter:blur(22px) saturate(1.7); }
+  /* 更多菜单在顶栏里面：顶栏自己带了 backdrop-filter，里面的元素取不到页面内容来模糊，所以菜单保持不透明。 */
+  .journey-controls-panel { background:#ffffffcc; border-color:#ffffffbf; -webkit-backdrop-filter:blur(22px) saturate(1.7); backdrop-filter:blur(22px) saturate(1.7); }
   .cta-bar { background:#ffffff80; -webkit-backdrop-filter:blur(14px) saturate(1.6); backdrop-filter:blur(14px) saturate(1.6); box-shadow:inset 0 1px 0 #ffffffe6,inset 0 0 0 1px #ffffff80,0 8px 24px #17251f1a; }
   #toast { background:#17251fbf; border:1px solid #ffffff2e; -webkit-backdrop-filter:blur(16px) saturate(1.6); backdrop-filter:blur(16px) saturate(1.6); }
   dialog { background:#ffffffd1; -webkit-backdrop-filter:blur(28px) saturate(1.8); backdrop-filter:blur(28px) saturate(1.8); box-shadow:0 30px 80px #17252040,inset 0 1px 0 #fff,inset 0 0 0 1px #ffffff99; }
   dialog::backdrop { background:#17251f52; -webkit-backdrop-filter:blur(4px); backdrop-filter:blur(4px); }
-  /* 手机与 App：标签栏是一块浮起来的玻璃。宽屏下标签并在顶栏里，不需要。 */
+  /* 手机与 App：标签栏换成玻璃。宽屏下标签并在顶栏里，不需要。 */
   @media(max-width:899px) {
-    :root { --nav-h:76px; }
-    .main-nav { left:12px; right:12px; bottom:calc(10px + env(safe-area-inset-bottom)); gap:2px; padding:6px; border:0; border-radius:32px; background:none; box-shadow:0 12px 32px #17251f2e,0 2px 8px #17251f14; }
-    .main-nav::before,.main-nav::after { content:""; position:absolute; inset:0; border-radius:inherit; pointer-events:none; }
-    /* 第一层：模糊加提饱和，再叠一层白。 */
-    .main-nav::before { z-index:-2; background:#ffffff73; -webkit-backdrop-filter:blur(14px) saturate(1.8); backdrop-filter:blur(14px) saturate(1.8); }
-    /* Blink 内核再加一道折射（glass.js 确认支持后才挂上这个类），模糊相应调轻，边缘才看得出弯折。 */
-    .glass-refract .main-nav::before { background:#ffffff59; backdrop-filter:blur(5px) url(#glass-nav) saturate(1.9) brightness(1.04); }
-    /* 第二层：边缘高光。 */
-    .main-nav::after { z-index:-1; box-shadow:inset 0 1px 1px #ffffffe6,inset 0 -1px 1px #ffffff66,inset 0 0 0 1px #ffffff59,inset 0 10px 16px -10px #ffffffcc; }
-    .main-nav a { border-radius:26px; color:#33443c; }
-    .main-nav a.active { color:var(--brand-dark); background:#ffffffbd; box-shadow:0 2px 8px #17251f1f,inset 0 1px 0 #fff; }
+    .main-nav { background:#ffffff57; -webkit-backdrop-filter:blur(16px) saturate(1.8); backdrop-filter:blur(16px) saturate(1.8); box-shadow:0 12px 32px #17251f2e,0 2px 8px #17251f14,inset 0 1px 1px #ffffffe6,inset 0 -1px 1px #ffffff66,inset 0 0 0 1px #ffffff59; }
+    /* Blink 内核再加一道边缘折射（glass.js 确认支持后才挂上这个类）。先模糊再折射，弯折的是色块而不是文字。 */
+    .glass-refract .main-nav { backdrop-filter:blur(12px) url(#glass-nav) saturate(1.8); }
+    /* 中间再压一层白，图标和文字压在任何内容上都看得清；四周留得更透，折射才看得见。 */
+    .main-nav::before { content:""; position:absolute; inset:0; z-index:0; border-radius:inherit; background:#ffffff94; pointer-events:none;
+      -webkit-mask-image:linear-gradient(to right,transparent 2px,#000 18px,#000 calc(100% - 18px),transparent calc(100% - 2px)),linear-gradient(to bottom,transparent 1px,#000 13px,#000 calc(100% - 13px),transparent calc(100% - 1px));
+      mask-image:linear-gradient(to right,transparent 2px,#000 18px,#000 calc(100% - 18px),transparent calc(100% - 2px)),linear-gradient(to bottom,transparent 1px,#000 13px,#000 calc(100% - 13px),transparent calc(100% - 1px));
+      -webkit-mask-composite:source-in; mask-composite:intersect; }
+    .main-nav a { text-shadow:0 0 5px #ffffffe6; }
+    .nav-thumb { background:#ffffffd6; box-shadow:0 2px 10px #17251f24,inset 0 1px 0 #fff; }
   }
 }
 @media(prefers-reduced-transparency:reduce) {
   body::before { display:none; }
-  .topbar::before,.main-nav::before,.cta-bar,#toast,dialog,dialog::backdrop,.more-menu-content,.journey-controls-panel { -webkit-backdrop-filter:none!important; backdrop-filter:none!important; }
-  .topbar::before { background:var(--bg)!important; }
-  .main-nav::before,.cta-bar,dialog,.more-menu-content,.journey-controls-panel,.card,.stat,.recent-item,.lib-item { background:var(--surface)!important; }
+  .topbar,.main-nav,.cta-bar,#toast,dialog,dialog::backdrop,.journey-controls-panel { -webkit-backdrop-filter:none!important; backdrop-filter:none!important; }
+  .topbar { background:var(--bg)!important; }
+  .main-nav::before { display:none; }
+  .main-nav,.cta-bar,dialog,.journey-controls-panel,.card,.stat,.recent-item,.lib-item { background:var(--surface)!important; }
   #toast { background:var(--ink)!important; }
 }
+@media(prefers-reduced-transparency:reduce) and (min-width:900px) { .main-nav { background:none!important; } }
+
+/* ---------- 换页与滚动手感 ---------- */
+/* 像 App 一样：拉到头不回弹、不触发浏览器的下拉刷新，固定的顶栏和标签栏不会跟着被拽走。 */
+html { overscroll-behavior-y:none; }
+/* 换页时新内容轻轻浮上来。途中页的悬浮面板是 position:fixed 的，带上 transform 会让它跟着跳，所以排除。 */
+@keyframes page-in { from { opacity:0; transform:translateY(10px); } }
+#app.page-enter>:not(.journey-controls) { animation:page-in .28s cubic-bezier(.2,.8,.2,1); }

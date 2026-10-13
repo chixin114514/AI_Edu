@@ -3,6 +3,9 @@ const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&
 // 更早生成的行程里可能存着 25:10 这样的时刻，显示成「次日 01:10」。
 const dayTime=t=>{const m=/^(\d{2,}):(\d{2})$/.exec(t||'');return m&&Number(m[1])>=24?`次日 ${String(Number(m[1])%24).padStart(2,'0')}:${m[2]}`:t||'';};
 const active=new Set();
+// 同一张底图（同一行程版本、同一天、同一视野）只取一次：切到别的标签再回来时直接用，不再闪一下「正在加载」。
+// 只留当前行程的，换了行程就清空。
+const mapCache=new Map();let cachedTrip=null;
 export function routeMapMarkup(trip,day){
  const stops=trip.days[day-1]?.stops||[];
  if(!stops.length)return '<div class="map-empty">生成行程后，这里会显示地图和路线。</div>';
@@ -11,6 +14,7 @@ export function routeMapMarkup(trip,day){
 export function destroyRouteMaps(){for(const dispose of active)dispose();active.clear();}
 export function mountRouteMaps(trip){
  if(!trip)return;
+ if(cachedTrip!==trip.id){mapCache.clear();cachedTrip=trip.id;}
  for(const el of document.querySelectorAll('.route-map')){
   const stops=trip.days[Number(el.dataset.day)-1]?.stops||[];
   const canvas=el.querySelector('.map-canvas'),picture=el.querySelector('.map-picture'),message=el.querySelector('.map-message');
@@ -22,10 +26,15 @@ export function mountRouteMaps(trip){
    controller?.abort();controller=new AbortController();const request=++sequence;controls(true);message.hidden=false;message.textContent='正在加载高德地图…';
    const q=new URLSearchParams({day:el.dataset.day,v:el.dataset.version});if(zoom!==undefined)q.set('zoom',zoom);if(center){q.set('lng',center[0]);q.set('lat',center[1]);}else if(focus!==null)q.set('focus',focus);
    try{
-    const response=await fetch(`/api/trip/${encodeURIComponent(trip.id)}/map?${q}`,{signal:controller.signal});
-    if(!response.ok)throw Error('MAP_UNAVAILABLE');const data=await response.json();
+    const url=`/api/trip/${encodeURIComponent(trip.id)}/map?${q}`;
+    let data=mapCache.get(url);
+    if(!data){
+     const response=await fetch(url,{signal:controller.signal});
+     if(!response.ok)throw Error('MAP_UNAVAILABLE');data=await response.json();
+     if(!/^data:image\/(png|jpeg);base64,[A-Za-z0-9+/=]+$/.test(data.image))throw Error('INVALID_MAP');
+     mapCache.set(url,data);if(mapCache.size>12)mapCache.delete(mapCache.keys().next().value);
+    }
     if(disposed||request!==sequence)return;
-    if(!/^data:image\/(png|jpeg);base64,[A-Za-z0-9+/=]+$/.test(data.image))throw Error('INVALID_MAP');
     view=data.view;
     const paths=routePaths(stops).map(path=>path.map((p,i)=>{const [x,y]=mapPixel(p,view);return `${i?'L':'M'}${x.toFixed(2)},${y.toFixed(2)}`;}).join(''));
     const pins=stops.map((p,i)=>{if(!validPoint([p.lng,p.lat]))return '';const [x,y]=mapPixel([p.lng,p.lat],view);return `<g class="map-pin" data-map-focus="${i}" role="button" tabindex="0" aria-label="${i+1}. ${esc(p.name)}" transform="translate(${x.toFixed(2)},${y.toFixed(2)})"><circle r="17" fill="${i===focus?'#ef6b4a':'#1f7a55'}" stroke="white" stroke-width="3"/><text y="5" text-anchor="middle" fill="white" font-size="15" font-weight="600">${i+1}</text></g>`;}).join('');
