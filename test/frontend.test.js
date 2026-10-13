@@ -150,12 +150,12 @@ test('background generation refreshes the visible journey without changing the s
   const first = b.handlers.get('#app:submit')({ preventDefault() {}, target: { id: 'plan-form', values: { city: '杭州市', days: '1', budget: '300', walk_limit_km: '6' } } });
   await new Promise(resolve => setImmediate(resolve));
   await b.run("navigate('journey')");
-  assert.match(b.node('#app').innerHTML, /先有方向/);
+  assert.match(b.node('#app').innerHTML, /还没有行程/);
   complete(); await new Promise(resolve => setImmediate(resolve));
   try{
   assert.equal(b.run('state.page'), 'journey');
   assert.match(b.node('#app').innerHTML, /你的行程已准备好/);
-  assert.doesNotMatch(b.node('#app').innerHTML, /先有方向/);
+  assert.doesNotMatch(b.node('#app').innerHTML, /还没有行程/);
   }finally{finishHistory();await first;}
 });
 
@@ -357,7 +357,7 @@ test('定位面板勾选后把当前位置作为起终点提交',async()=>{
 test('行程页能查询公交换乘并显示分段与票价',async()=>{
   const b=toolsBrowser();
   await b.run("(async()=>{state.page='trip';await render();})()");
-  assert.match(b.node('#app').innerHTML,/怎么去 · 公交换乘/);
+  assert.match(b.node('#app').innerHTML,/公交换乘/);
   assert.match(b.node('#app').innerHTML,/第1站 甲地/);
   assert.equal(b.run('state.transit.from.name'),'第1站 甲地');
   assert.equal(b.run('state.transit.to.name'),'第2站 乙地');
@@ -468,17 +468,15 @@ test('移出与加入当天行程都会提交完整的新顺序',async()=>{
   assert.deepEqual(Object.keys(posted[1].stops[2]),['id']);
 });
 
-test('模型授权直接显示在规划表单里，不再收进折叠栏',async()=>{
+test('模型授权和定位都直接显示在规划表单里，不收进折叠栏',async()=>{
   const b=toolsBrowser();
   await b.run("(async()=>{state.page='plan';await render();})()");
   const html=b.node('#app').innerHTML;
   assert.match(html,/name="model_consent"/);
-  assert.match(html,/允许将兴趣和行程节点发送给 DeepSeek/);
-  // 折叠栏里只留定位；授权勾选框必须在表单里直接可见。
-  const details=html.match(/<details class="optional-settings">[\s\S]*?<\/details>/)?.[0]||'';
-  assert.ok(details,'定位仍然是可选的折叠栏');
-  assert.match(details,/自动识别当前位置/);
-  assert.doesNotMatch(details,/model_consent/,'模型授权不能藏在折叠栏里');
+  assert.match(html,/是否将兴趣和行程节点发送给 DeepSeek/);
+  // 规划表单里不再有折叠栏：授权开关和定位都直接可见。
+  assert.doesNotMatch(html,/<details/,'模型授权不能藏在折叠栏里');
+  assert.match(html,/id="locate-plan"/);
   // 仍然不落盘：勾选后重新加载不该变成默认勾选。
   b.handlers.get('#app:input')({target:{name:'model_consent',type:'checkbox',checked:true}});
   assert.equal(b.run('state.planConsent'),true);
@@ -571,7 +569,7 @@ test('收尾文字卡片：未授权时说明原因，授权后可生成并展�
   const noConsent=editBrowser({handler:async url=>url==='/api/trip/trip-edit/report'?{ok:true,json:async()=>({finished:true,visited_stops:2,total_stops:3,walked_km:2.4,planned_distance_km:3.1,accepted:1,rejected:0,events:[],preference_note:'继续记录。',data_mode:'live',summary:null,journal:[]})}:null});
   noConsent.run("(async()=>{state.page='report';await render();})()");
   await new Promise(resolve=>setImmediate(resolve));
-  assert.match(noConsent.node('#app').innerHTML,/没有开启模型授权/);
+  assert.match(noConsent.node('#app').innerHTML,/没有开启 DeepSeek/);
   assert.doesNotMatch(noConsent.node('#app').innerHTML,/id="write-summary"/);
 
   let summaryCalls=0,generated=null;
