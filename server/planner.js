@@ -327,6 +327,18 @@ async function annotateStops(days,prefs,catalog,limitations){
   }
   return result.explanation;
 }
+export function simulateState(input){
+  ensure(input&&typeof input==='object'&&!Array.isArray(input),'模拟数据格式无效');
+  const ranges={hr:[25,240],baseline_hr:[25,240],cadence:[0,240],baseline_cadence:[1,240],duration_s:[0,86400]};
+  ensure(Object.keys(input).every(k=>Object.hasOwn(ranges,k)||['status','use_jev'].includes(k)),'模拟数据包含不支持的字段');
+  for(const [key,[min,max]]of Object.entries(ranges))ensure(typeof input[key]==='number'&&Number.isFinite(input[key])&&input[key]>=min&&input[key]<=max,'请填写有效的心率、步频、基线与持续时间');
+  ensure(['auto','normal','mild_fatigue','rest'].includes(input.status),'模拟状态无效');
+  ensure(typeof input.use_jev==='boolean','请明确是否调用Jev');
+  const features={hr_vs_baseline_pct:Math.round((input.hr/input.baseline_hr-1)*100),cadence_change_pct:Math.round((input.cadence/input.baseline_cadence-1)*100),duration_s:input.hr>=input.baseline_hr*1.25?input.duration_s:0};
+  const rule=evaluate(features,'state');
+  const forced={normal:{status:'normal',action:'continue',reason:'管理员模拟正常状态，保留当前行程。'},mild_fatigue:{status:'mild_fatigue',action:'shorten',reason:'管理员模拟轻度疲劳，建议缩短后续路线。'},rest:{status:'rest',action:'shorten',reason:'管理员模拟需要休息，建议缩短后续路线并休息。'}};
+  return {features,rule,outcome:input.status==='auto'?rule:forced[input.status],use_jev:input.use_jev};
+}
 export function evaluate(features={},trigger){
   if(trigger==='unwell')return {status:'paused',action:'seek_help',reason:'您主动报告不适。请停止游览、到安全位置休息，并向身边的人或当地紧急服务寻求帮助。'};
   if(trigger==='rain')return {status:'weather_change',action:'rain',reason:'天气变化演示：切换到室内候选节点，减少户外停留。'};

@@ -26,7 +26,7 @@ const dayTime=t=>{const m=/^(\d{2,}):(\d{2})$/.exec(t||'');return m&&Number(m[1]
 const tag=category=>category?`<span class="tag tone-${CATEGORY_TONE[category]||'rest'}">${esc(category)}</span>`:'';
 const fallbackRegions=[['浙江省','杭州市','宁波市'],['北京市','北京市'],['上海市','上海市'],['广东省','广州市','深圳市'],['四川省','成都市'],['重庆市','重庆市'],['江苏省','南京市','苏州市']].map(([name,...cities])=>({name,cities:cities.map(name=>({name,districts:[]}))}));
 const draft=readDraft();
-const state={page:'plan',draft,planPending:false,planError:'',planConsent:false,planProvince:draft.province,planCity:draft.city,planDistrict:draft.district_adcode,regions:fallbackRegions,regionsReady:false,regionError:false,trip:null,session:null,suggestion:null,day:1,config:null,pois:[],trips:[],interests:draft.interests,sensor:{},watchPairing:null,watchPending:false,location:null,locationMessage:'',locating:false,user:null,authMode:'login',authChecked:false,offline:false,planStartPoint:null,planEndPoint:null,picker:null,providerTests:{},providerTesting:null,transit:{from:null,to:null,result:null,error:'',loading:false},elevation:{loading:false,data:null,error:''},stopDetail:null,journal:{},journalTrip:null,journalDraft:null,summaryLoading:false,summaryError:''};
+const state={page:'plan',draft,planPending:false,planError:'',planConsent:false,planProvince:draft.province,planCity:draft.city,planDistrict:draft.district_adcode,regions:fallbackRegions,regionsReady:false,regionError:false,trip:null,session:null,suggestion:null,day:1,config:null,pois:[],trips:[],interests:draft.interests,sensor:{},watchPairing:null,watchPending:false,location:null,locationMessage:'',locating:false,user:null,authMode:'login',authChecked:false,offline:false,planStartPoint:null,planEndPoint:null,picker:null,providerTests:{},providerTesting:null,adminSimulation:null,transit:{from:null,to:null,result:null,error:'',loading:false},elevation:{loading:false,data:null,error:''},stopDetail:null,journal:{},journalTrip:null,journalDraft:null,summaryLoading:false,summaryError:''};
 applyDestination(draft.province,draft.city,draft.district_adcode,draft.district);
 const sensors=new Sensors();
 let toastTimer,renderVersion=0,lastStateAt=0,locationRequest=0,destinationRevision=0,accountRevision=0,watchAttempt=0;
@@ -91,7 +91,7 @@ function updateAccountUI(){
   $('#logout-button').hidden=!state.user;
 }
 async function switchAccount(user){
-  state.providerTests={};state.providerTesting=null;
+  state.providerTests={};state.providerTesting=null;state.adminSimulation=null;
   accountRevision++;cancelPendingWatch();state.watchPairing=null;closeModal();renderVersion++;state.planPending=false;state.planError='';state.planConsent=false;state.user=user;state.trip=null;state.trips=[];state.session=null;state.suggestion=null;
   destroyRouteMaps();sensors.stop();clearLocation();
   localStorage.removeItem('mx-trip');localStorage.removeItem('mx-trip-owner');localStorage.removeItem('mx-session');
@@ -655,6 +655,59 @@ function tripPage(){
   ${state.trips.length?`<section class="side-block"><h2 class="block-title">全部行程</h2><div class="recent-list wide">${state.trips.slice(0,5).map(x=>`<button class="recent-item ${x.id===t.id?'current':''}" data-trip="${esc(x.id)}"><span class="recent-city">${esc(x.preferences.city)}</span><small>${esc(x.preferences.date)} · ${x.preferences.days} 天${x.id===t.id?' · 当前':''}</small>${icon('arrow')}</button>`).join('')}</div></section>`:''}`;
 }
 function sensorCard(){const s=state.sensor;return `<div class="card-head"><h2>身体状态</h2>${state.session?.model_consent?badge('AI 判断已开'):''}</div><div class="sensor-grid"><div class="sensor-value heart"><span>当前心率</span><strong id="heart-value">--<small>bpm</small></strong></div><div class="sensor-value"><span>估计步频</span><strong id="cadence-value">--<small>步/分</small></strong></div></div><svg class="pulse-chart" viewBox="0 0 350 55" aria-hidden="true"><path d="M0 30h350" stroke="#e3e8df" stroke-dasharray="4 4"/><path id="pulse-line" d="M0 30h350" fill="none" stroke="#ef6b4a" stroke-width="2"/></svg><p class="sensor-state"><span id="sensor-status" role="status">未连接设备</span><span id="sensor-extra"></span></p><div class="device-options"><button class="secondary" id="connect-watch">连接 Apple Watch</button><button class="secondary" id="connect-hr">连接蓝牙心率带</button></div><div class="watch-progress" id="watch-progress" hidden><p id="watch-progress-text"></p><button class="text-button" id="view-watch">查看配对进度</button></div><div class="toolbar sensor-actions"><button class="chip-btn" id="calibrate" disabled>采集静息心率</button><button class="chip-btn" id="motion" ${s.motionActive?'disabled':''}>${s.motionActive?'步频已开启':'开启步频'}</button><button class="chip-btn quiet" id="stop-sensors">全部停止</button></div>${locationPanel(false)}<p class="fineprint">只用来提醒你调整节奏，不是医疗建议。</p>`;}
+function adminSimulationActive(){
+  const a=state.adminSimulation,s=state.session;
+  return state.user?.role==='admin'&&s&&!s.ended_at&&s.status!=='paused'&&a?.session_id===s.id&&(a.applied||a.loading);
+}
+function simulationState(){
+  if(state.adminSimulation?.session_id!==state.session.id)state.adminSimulation={session_id:state.session.id,draft:{hr:100,baseline_hr:70,cadence:80,baseline_cadence:100,duration_s:180,status:'auto',use_jev:false},applied:null,result:null,error:'',loading:false};
+  return state.adminSimulation;
+}
+const bodyStatusLabels={normal:'正常',mild_fatigue:'轻度疲劳',rest:'需要休息'};
+function adminSimulationPanel(){
+  if(state.user?.role!=='admin')return '';
+  const a=simulationState(),d=a.draft,r=a.result,paused=state.session.status==='paused';
+  const number=(name,label,min,max,unit)=>`<label class="field"><span class="field-label">${label}${unit?'（'+unit+'）':''}</span><input type="number" name="${name}" data-simulation-field="${name}" value="${esc(d[name])}" min="${min}" max="${max}" step="1" inputmode="numeric" required></label>`;
+  return `<section class="card admin-simulation"><div class="card-head"><h2>自定义身体状态</h2>${badge('仅管理员 · 模拟',true)}</div><p class="fineprint">填写数值后应用；基线与持续时间用于自动判断。模拟读数仅保留在本页，生成的改线建议仍需确认。</p>${paused?'<p class="notice">当前行程因不适已暂停，无法继续模拟。请结束本次行程。</p>':''}<form id="admin-simulation-form"><fieldset ${a.loading||paused?'disabled':''}><div class="form-grid">${number('hr','心率',25,240,'bpm')}${number('cadence','步频',0,240,'步/分')}<label class="field full"><span class="field-label">身体状态</span><select name="status" data-simulation-field="status">${[['auto','按数值自动判断'],...Object.entries(bodyStatusLabels)].map(([v,label])=>`<option value="${v}" ${d.status===v?'selected':''}>${label}</option>`).join('')}</select></label></div><details class="simulation-details"><summary>基线与持续时间</summary><div class="form-grid">${number('baseline_hr','静息心率基线',25,240,'bpm')}${number('baseline_cadence','步频基线',1,240,'步/分')}${number('duration_s','心率偏高持续时间',0,86400,'秒')}</div></details><label class="check-row"><input type="checkbox" name="use_jev" data-simulation-field="use_jev" ${d.use_jev?'checked':''} ${state.session.model_consent?'':'disabled'}>同时调用 Jev 对照判断</label><p class="fineprint">${state.session.model_consent?'勾选后将模拟的心率、步频变化比例和持续时间发送给 Jev。':'如需测试 Jev，请在开始漫游时开启 AI 身体状态判断授权。'}</p><div class="toolbar"><button type="submit" class="primary">${a.loading?'正在判断…':'应用并判断'}</button><button type="button" class="secondary" id="clear-admin-simulation">恢复设备读数</button></div></fieldset><p class="error-inline" role="alert">${esc(a.error)}</p></form>${r?`<div class="simulation-result" role="status"><strong>模拟状态：${esc(bodyStatusLabels[r.status]||r.status)}</strong><p>${esc(r.reason)}</p><p class="fineprint">心率较基线 ${r.features.hr_vs_baseline_pct}% · 步频变化 ${r.features.cadence_change_pct}% · 持续 ${r.features.duration_s} 秒<br>内置规则：${esc(bodyStatusLabels[r.rule_status]||r.rule_status)}${r.model_requested?`<br>Jev：${r.model_reference?esc(bodyStatusLabels[r.model_reference.status]||r.model_reference.status)+(Number.isFinite(r.model_reference.confidence)?` · 置信度 ${Math.round(r.model_reference.confidence*100)}%`:''):'未获得有效结果，使用规则判断'}`:''}</p>${r.route_reason!==r.reason?`<p>${esc(r.route_reason)}</p>`:''}</div>`:''}</section>`;
+}
+function rememberSimulationField(target){
+  const field=target.dataset?.simulationField;
+  if(!field)return false;
+  if(state.user?.role==='admin'&&state.session&&!state.adminSimulation?.loading)simulationState().draft[field]=target.type==='checkbox'?target.checked:target.value;
+  return true;
+}
+async function applyAdminSimulation(form){
+  if(state.user?.role!=='admin'||!state.session||state.session.ended_at||state.session.status==='paused')return;
+  const a=simulationState();if(a.loading)return;
+  const raw=Object.fromEntries(new FormData(form)),input={status:raw.status,use_jev:raw.use_jev==='on'};
+  for(const key of ['hr','cadence','baseline_hr','baseline_cadence','duration_s'])input[key]=raw[key]?.trim()?Number(raw[key]):NaN;
+  a.draft={...raw,use_jev:input.use_jev};a.error='';
+  if(Object.values(input).some(v=>typeof v==='number'&&!Number.isFinite(v))){a.error='请完整填写心率、步频、基线和持续时间。';await render();return;}
+  const revision=accountRevision,sessionId=state.session.id;
+  const current=()=>revision===accountRevision&&state.session?.id===sessionId&&!state.session.ended_at&&state.adminSimulation===a;
+  a.loading=true;await render();
+  try{
+    if(!current())return;
+    const result=await api('/session/simulate',{session_id:sessionId,simulation:input});
+    if(!current())return;
+    const session=await api('/session/'+sessionId);
+    if(!current())return;
+    state.session=session;
+    if(!result.simulation_result)throw Error(result.reason||'当前行程无法模拟');
+    a.applied={...input};a.result={...result.simulation_result,route_reason:result.reason};
+    state.suggestion=result.require_confirm?result:null;
+  }catch(e){if(current())a.error=e.message;}
+  finally{if(current()){a.loading=false;if(state.page==='journey')await render();}}
+}
+function paintAdminReadings(){
+  if(!adminSimulationActive()||!state.adminSimulation.applied)return false;
+  const a=state.adminSimulation;
+  $('#heart-value').innerHTML=`${a.applied.hr}<small>bpm · 模拟</small>`;
+  $('#cadence-value').innerHTML=`${a.applied.cadence}<small>步/分 · 模拟</small>`;
+  $('#sensor-status').textContent=`管理员模拟 · ${bodyStatusLabels[a.result.status]||a.result.status}`;
+  $('#sensor-extra').textContent='正在使用自定义读数';
+  $('#calibrate').disabled=true;$('#pulse-line').setAttribute('d','M0 30h350');return true;
+}
 function watchConnectionView(){
   const p=state.watchPairing,s=state.sensor;
   if(!p||p.session_id!==state.session?.id||state.session?.ended_at||state.session?.status==='paused')return {text:'连接已结束，可继续手动反馈。',retry:true};
@@ -706,7 +759,7 @@ function journeyPage(){
   <section class="feel"><h2>现在感觉怎么样？</h2>${paused?'<p class="muted">路线建议已暂停。需要急救请拨打 120。</p>':`<div class="feel-grid"><button data-feedback="tired"><span class="feel-emoji" aria-hidden="true">😮‍💨</span><strong>有点累</strong><small>少走一点，找地方歇歇</small></button><button data-feedback="hungry"><span class="feel-emoji" aria-hidden="true">🍜</span><strong>想吃饭</strong><small>就近安排一家餐厅</small></button></div>`}<button class="help-btn" id="unwell">身体不舒服，需要帮助</button></section>
   ${current&&!paused?journalBlock(s.day,current):''}
   ${!paused?`<div class="demo-row">${badge('演示用',true)}<button class="chip-btn" data-feedback="rain">模拟下雨</button><button class="chip-btn" id="simulate-fatigue">模拟疲劳</button></div>`:''}
-  </div><aside class="journey-aside"><section class="card sensor-card">${sensorCard()}</section><section class="card flush"><div class="card-head pad"><h2>地图</h2></div>${mapView(d.stops)}</section></aside></div>`;
+  ${adminSimulationPanel()}</div><aside class="journey-aside"><section class="card sensor-card">${sensorCard()}</section><section class="card flush"><div class="card-head pad"><h2>地图</h2></div>${mapView(d.stops)}</section></aside></div>`;
 }
 async function reportPage(){
   if(!state.trip)return empty('还没有手记','走完一段行程，路线和每次选择都会记在这里。');
@@ -752,8 +805,8 @@ function navigate(page){if(!labels[page])return;const menu=$('#more-menu');if(me
 function download(name,data){const url=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
 async function refreshSession(){if(!state.session)return;state.session=await api('/session/'+state.session.id);localStorage.setItem('mx-session',state.session.id);}
 async function feedback(trigger,demo=false){if(!state.session||state.session.ended_at)throw Error('请先开始漫游');const features=trigger==='hr_high_sustained'&&demo?{hr_vs_baseline_pct:30,duration_s:190,cadence_change_pct:-20}:sensors.features();const a=await api('/feedback',{session_id:state.session.id,feedback_type:trigger,features,demo});state.suggestion=a.require_confirm?a:null;await refreshSession();if(!a.require_confirm)toast(a.reason);await render();}
-function updateSensors(){updateWatchUI();const s=state.sensor;if(!$('#heart-value'))return;$('#heart-value').innerHTML=`${s.hr??'--'}<small>bpm</small>`;$('#cadence-value').innerHTML=`${s.cadence??'--'}<small>步/分</small>`;$('#sensor-status').textContent=s.source==='watch'?({background:'页面在后台，暂停判断',waiting:'等手表输入配对码',waiting_for_sample:'手表已配对，等心率数据',unavailable:'暂时连不上，等待恢复',disconnected:'手表已断开，请重新配对'}[s.watchStatus]||`Apple Watch · ${s.hr==null?'等心率数据':s.calibrating?'静坐采集中…':s.baseline?'静息心率 '+s.baseline+' bpm':'还没采集静息心率'}`):s.connected?`已连接 · ${s.calibrating?'静坐采集中…':s.baseline?'静息心率 '+s.baseline+' bpm':'还没采集静息心率'}`:'未连接设备';$('#sensor-extra').textContent=s.steps?`已走约 ${s.steps} 步`:'';$('#calibrate').disabled=!s.connected||s.hr==null||s.calibrating;const motionButton=$('#motion');if(motionButton){motionButton.disabled=!!s.motionActive;motionButton.textContent=s.motionActive?'步频已开启':'开启步频';}const samples=sensors.samples.slice(-50);if(samples.length<2)$('#pulse-line').setAttribute('d','M0 30h350');if(samples.length>1){const min=Math.min(...samples.map(s=>s.value))-3,max=Math.max(...samples.map(s=>s.value))+3;$('#pulse-line').setAttribute('d',samples.map((s,i)=>`${i?'L':'M'}${i/(samples.length-1)*350},${45-(s.value-min)/(max-min)*35}`).join(' '));}}
-sensors.addEventListener('change',e=>{state.sensor=e.detail;if(!state.watchPending&&!e.detail.source)state.watchPairing=null;updateSensors();if(e.detail.message)toast(e.detail.message);const f=sensors.features();if(state.session&&!state.session.ended_at&&state.session.status!=='paused'&&f.duration_s>=180&&f.cadence_change_pct<=-15&&Date.now()-lastStateAt>300000){lastStateAt=Date.now();feedback('hr_high_sustained').catch(e=>toast(e.message));}});
+function updateSensors(){updateWatchUI();const s=state.sensor;if(!$('#heart-value'))return;if(paintAdminReadings())return;$('#heart-value').innerHTML=`${s.hr??'--'}<small>bpm</small>`;$('#cadence-value').innerHTML=`${s.cadence??'--'}<small>步/分</small>`;$('#sensor-status').textContent=s.source==='watch'?({background:'页面在后台，暂停判断',waiting:'等手表输入配对码',waiting_for_sample:'手表已配对，等心率数据',unavailable:'暂时连不上，等待恢复',disconnected:'手表已断开，请重新配对'}[s.watchStatus]||`Apple Watch · ${s.hr==null?'等心率数据':s.calibrating?'静坐采集中…':s.baseline?'静息心率 '+s.baseline+' bpm':'还没采集静息心率'}`):s.connected?`已连接 · ${s.calibrating?'静坐采集中…':s.baseline?'静息心率 '+s.baseline+' bpm':'还没采集静息心率'}`:'未连接设备';$('#sensor-extra').textContent=s.steps?`已走约 ${s.steps} 步`:'';$('#calibrate').disabled=!s.connected||s.hr==null||s.calibrating;const motionButton=$('#motion');if(motionButton){motionButton.disabled=!!s.motionActive;motionButton.textContent=s.motionActive?'步频已开启':'开启步频';}const samples=sensors.samples.slice(-50);if(samples.length<2)$('#pulse-line').setAttribute('d','M0 30h350');if(samples.length>1){const min=Math.min(...samples.map(s=>s.value))-3,max=Math.max(...samples.map(s=>s.value))+3;$('#pulse-line').setAttribute('d',samples.map((s,i)=>`${i?'L':'M'}${i/(samples.length-1)*350},${45-(s.value-min)/(max-min)*35}`).join(' '));}}
+sensors.addEventListener('change',e=>{state.sensor=e.detail;if(!state.watchPending&&!e.detail.source)state.watchPairing=null;updateSensors();if(e.detail.message)toast(e.detail.message);const f=sensors.features();if(state.session&&!state.session.ended_at&&!adminSimulationActive()&&state.session.status!=='paused'&&f.duration_s>=180&&f.cadence_change_pct<=-15&&Date.now()-lastStateAt>300000){lastStateAt=Date.now();feedback('hr_high_sustained').catch(e=>toast(e.message));}});
 // 步频默认开启：开始漫游时就申请运动权限。iOS 要求 requestPermission 必须发生在
 // 用户手势里，所以调用点放在点击处理的最前面（任何 await 之前），否则手势上下文会丢失。
 // 桌面浏览器没有 DeviceMotionEvent，直接静默跳过，不打扰。
@@ -763,6 +816,7 @@ async function startMotionByDefault(){
   catch{/* 权限被拒或设备不支持时保留「启用步频」按钮，让用户自己再试 */ }
 }
 $('#app').addEventListener('change',e=>{
+  if(rememberSimulationField(e.target))return;
   if(e.target.name==='transit-from'||e.target.name==='transit-to'){
     // 选「自定义」时保持已搜索到的点不动，等用户重新搜索。
     if(e.target.value==='custom')return;
@@ -772,6 +826,7 @@ $('#app').addEventListener('change',e=>{
   }
   if(['province','city','district_adcode'].includes(e.target.name))destinationRevision++;if(e.target.name==='province'){state.planProvince=e.target.value;state.planCity='';state.planDistrict='';paintDestination();}else if(e.target.name==='city'){state.planCity=e.target.value;state.planDistrict='';paintDestination();}else if(e.target.name==='district_adcode')state.planDistrict=e.target.value;if(['province','city','district_adcode'].includes(e.target.name))saveDraft();});
 $('#app').addEventListener('submit',async e=>{
+  if(e.target.id==='admin-simulation-form'){e.preventDefault();await applyAdminSimulation(e.target);return;}
   if(e.target.id!=='plan-form')return;
   e.preventDefault();if(state.planPending)return;
   const revision=accountRevision;
@@ -800,6 +855,7 @@ $('#app').addEventListener('submit',async e=>{
 });
 $('#app').addEventListener('input',e=>{
   const target=e.target;
+  if(rememberSimulationField(target))return;
   if(target.name==='model_consent'){state.planConsent=target.checked;return;}
   if(['province','city','district_adcode'].includes(target.name))return;
   if(!Object.hasOwn(state.draft,target.name)||target.name==='interests')return;
@@ -813,6 +869,7 @@ $('#app').addEventListener('input',e=>{
 $('#app').addEventListener('invalid',e=>{const details=e.target.closest('details');if(details)details.open=true;},true);
 document.addEventListener('click',async e=>{
   const b=e.target.closest('button');if(!b)return;
+  if(b.id==='clear-admin-simulation'){if(state.user?.role==='admin'&&!state.adminSimulation?.loading){state.adminSimulation=null;await render();}return;}
   if(b.dataset.providerTest){await testOpsProvider(b.dataset.providerTest);return;}
   if(b.dataset.authMode){state.authMode=b.dataset.authMode;render();return;}
   if(b.dataset.page){navigate(b.dataset.page);return;}

@@ -499,3 +499,13 @@ summary { cursor:pointer; }
 @media(prefers-reduced-motion:reduce) {
   *,*::before,*::after { transition:none!important; animation:none!important; scroll-behavior:auto!important; }
 }
+
+/* 管理员途中模拟面板 */
+.admin-simulation { min-width:0; }
+.admin-simulation fieldset { border:0; padding:0; margin:0; min-width:0; }
+.admin-simulation input,.admin-simulation select { min-width:0; max-width:100%; box-sizing:border-box; }
+.simulation-details { margin:16px 0; }
+.simulation-details summary { cursor:pointer; margin-bottom:12px; }
+.simulation-result { margin-top:16px; padding:14px; border-radius:12px; background:var(--bg); overflow-wrap:anywhere; }
+.simulation-result p { margin:8px 0 0; }
+.admin-simulation .toolbar { flex-wrap:wrap; }

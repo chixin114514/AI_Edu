@@ -254,6 +254,50 @@ function toolsBrowser({handler}={}){
   b.sent=sent;
   return b;
 }
+function simulationBrowser(fetch){
+  const b=browser({fetch});
+  b.run("state.trip="+JSON.stringify(toolsTrip)+";state.user={id:'admin',username:'admin',role:'admin'};state.session={id:'sim-session',day:1,current_index:0,status:'normal',model_consent:true};state.page='journey';state.journalTrip=state.trip.id;state.sensor={hr:75,cadence:95};");
+  return b;
+}
+const simulationForm={id:'admin-simulation-form',values:{hr:'110',baseline_hr:'70',cadence:'72',baseline_cadence:'100',duration_s:'200',status:'rest',use_jev:'on'}};
+const simulationReply={status:'rest',require_confirm:false,reason:'就地休息',simulation_result:{status:'rest',rule_status:'rest',reason:'模拟疲劳',features:{hr_vs_baseline_pct:57,cadence_change_pct:-28,duration_s:200},model_requested:true,model_reference:{status:'mild_fatigue',confidence:.8}}};
+test('custom journey panel is admin-only, accepts custom readings and restores real device readings',async()=>{
+  const calls=[];
+  const b=simulationBrowser(async(url,options)=>{
+    if(url==='/api/session/simulate'){calls.push(JSON.parse(options.body));return {ok:true,json:async()=>simulationReply};}
+    if(url==='/api/session/sim-session')return {ok:true,json:async()=>({id:'sim-session',day:1,current_index:0,status:'rest',model_consent:true})};
+    throw Error('unexpected '+url);
+  });
+  await b.run('render()');assert.match(b.node('#app').innerHTML,/id="admin-simulation-form"/);
+  b.handlers.get('#app:input')({target:{dataset:{simulationField:'hr'},name:'hr',value:'110'}});
+  await b.run('render()');assert.match(b.node('#app').innerHTML,/name="hr"[^>]*value="110"/);
+  assert.match(b.node('#heart-value').innerHTML,/75</,'draft is not applied until submission');
+  await b.handlers.get('#app:submit')({preventDefault(){},target:simulationForm});
+  assert.deepEqual(calls,[{session_id:'sim-session',simulation:{status:'rest',use_jev:true,hr:110,cadence:72,baseline_hr:70,baseline_cadence:100,duration_s:200}}]);
+  assert.match(b.node('#heart-value').innerHTML,/110<small>bpm · 模拟/);assert.match(b.node('#cadence-value').innerHTML,/72<small>步\/分 · 模拟/);
+  assert.match(b.node('#app').innerHTML,/Jev：轻度疲劳 · 置信度 80%/);assert.match(b.node('#sensor-status').textContent,/管理员模拟/);
+  b.run('state.sensor.hr=85;updateSensors()');assert.match(b.node('#heart-value').innerHTML,/110</);
+  assert.doesNotMatch([...b.stored.values()].join(''),/baseline_hr|baseline_cadence|duration_s/);
+  await click(b,'clear-admin-simulation');assert.match(b.node('#heart-value').innerHTML,/85</);assert.doesNotMatch(b.node('#sensor-status').textContent,/模拟/);
+  b.run("state.user.role='user'");await b.run('render()');assert.doesNotMatch(b.node('#app').innerHTML,/admin-simulation-form/);
+  b.run('state.user=null');await b.run('render()');assert.doesNotMatch(b.node('#app').innerHTML,/admin-simulation-form/);
+});
+test('custom simulation prevents duplicate submits, reports failure and ignores a changed session',async()=>{
+  let finish;const requests=[];
+  const b=simulationBrowser(async(url,options)=>{requests.push(url);return new Promise(resolve=>finish=resolve);});
+  const submit=()=>b.handlers.get('#app:submit')({preventDefault(){},target:simulationForm});
+  const pending=submit();await new Promise(resolve=>setImmediate(resolve));
+  await submit();assert.deepEqual(requests,['/api/session/simulate']);assert.match(b.node('#app').innerHTML,/正在判断/);
+  finish({ok:false,status:503,json:async()=>({error:'地图服务暂时不可用'})});await pending;
+  assert.match(b.node('#app').innerHTML,/地图服务暂时不可用/);assert.match(b.node('#heart-value').innerHTML,/75</);
+  const second=submit();await new Promise(resolve=>setImmediate(resolve));
+  b.run("state.session={id:'other-session',day:1,current_index:0,status:'normal'};state.suggestion=null");
+  finish({ok:true,json:async()=>simulationReply});await second;
+  assert.equal(b.run('state.session.id'),'other-session');assert.equal(b.run('state.suggestion'),null);assert.equal(requests.length,2,'old result must not refresh new session');
+  await b.run('render()');assert.equal(b.run('state.adminSimulation.applied'),null);
+  b.run("state.session.status='paused'");await b.run('render()');assert.match(b.node('#app').innerHTML,/无法继续模拟/);
+  await submit();assert.equal(requests.length,2);
+});
 function clickNode(b,button){
   Object.assign(button,{classList:{contains:()=>false}});
   return b.handlers.get('click')({target:{closest:()=>button}});
