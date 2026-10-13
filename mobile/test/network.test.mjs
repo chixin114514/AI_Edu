@@ -25,6 +25,29 @@ test('every packaged page installs the same mobile startup entry',async()=>{
   }finally{await rm(dir,{recursive:true,force:true});}
 });
 
+// 前台服务的原生回归：Android 14 起，前台服务类型要求对应运行时权限已经授予，
+// 否则 startForeground() 抛 SecurityException 并把整个 App 带崩。
+// 没有 Android 仪器测试环境，所以这里直接对原生源码与清单做静态校验 ——
+// 一旦有人改回「无条件用 connectedDevice」，这条用例会失败。
+test('前台服务按已授予的权限选择类型，且异常不会逃到主线程',async()=>{
+  const manifest=await readFile(new URL('../android/app/src/main/AndroidManifest.xml',import.meta.url),'utf8');
+  assert.match(manifest,/foregroundServiceType="connectedDevice\|location"/);
+  assert.match(manifest,/android\.permission\.FOREGROUND_SERVICE_LOCATION/);
+  assert.ok(manifest.includes('android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE'));
+
+  const plugin=await readFile(new URL('../android/app/src/main/java/com/manxing/app/KeepAlivePlugin.java',import.meta.url),'utf8');
+  assert.ok(plugin.includes('BLUETOOTH_CONNECT')&&plugin.includes('BLUETOOTH_SCAN')&&plugin.includes('BLUETOOTH_ADVERTISE'),'蓝牙三种权限任一即可');
+  assert.ok(plugin.includes('ACCESS_FINE_LOCATION')&&plugin.includes('ACCESS_COARSE_LOCATION'),'定位权限支撑 location 类型');
+  assert.ok(plugin.indexOf('if (types == 0)')<plugin.indexOf('startForegroundService'),'必须先判定权限再启动服务，顺序反了会崩');
+  assert.ok(plugin.includes('KeepAliveService.EXTRA_TYPES'),'类型要传给服务，服务不再自己假定');
+  assert.ok(plugin.includes('call.resolve(denied)')&&plugin.includes('reason'),'不能启动时把原因回给前端');
+
+  const service=await readFile(new URL('../android/app/src/main/java/com/manxing/app/KeepAliveService.java',import.meta.url),'utf8');
+  assert.ok(!service.includes('ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE'),'服务不能再硬编码 connectedDevice');
+  assert.ok(service.includes('getIntExtra(EXTRA_TYPES'),'类型来自插件');
+  assert.ok(service.includes('catch (RuntimeException')&&service.includes('stopSelf()'),'异常必须兜住并停掉服务');
+});
+
 test('API bridge keeps local calls on-device and external calls on the original HTTP transport',async()=>{
   const local=[],network=[],alive=[];
   const scope={location:new URL('https://localhost/plan'),fetch:async(...args)=>{network.push(args);return new Response('external');},

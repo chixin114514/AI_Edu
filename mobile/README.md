@@ -40,8 +40,29 @@ APK 位于 `android/app/build/outputs/apk/debug/app-debug.apk`。将新 APK 覆�
 
 原生联网使用 Capacitor 内置的 [CapacitorHttp](https://capacitorjs.com/docs/apis/http)，在 `capacitor.config.json` 中开启 `plugins.CapacitorHttp.enabled`。保留 HTTPS 本地来源与 TLS 校验。
 
+## 前台服务与「开始漫游」闪退
+
+前台服务用来在锁屏／切后台后保住进程，让心率与定位继续记录。它在 `POST /api/session/start` 之后由 `src/bridge.js` 的 `syncKeepAlive` 拉起。
+
+Android 14 起，**前台服务类型要求对应的运行时权限已经授予，且必须在 `startForeground()` 之前就满足**；不满足时系统抛 `SecurityException`，会把整个 App 带崩（JS 层的 `try/catch` 接不住 Java 崩溃，表现就是「点开始漫游闪退」）。
+
+因此类型不再写死，而是按实际已授予的权限选择：
+
+| 已授予 | 使用的类型 | 说明 |
+| --- | --- | --- |
+| 蓝牙（`BLUETOOTH_CONNECT`／`SCAN`／`ADVERTISE` 任一） | `connectedDevice` | 正在通过蓝牙接收心率 |
+| 定位（`ACCESS_FINE`／`COARSE_LOCATION`） | `location` | 漫游途中本来就在记录位置 |
+| 两者都有 | 两个一起 | 必须同时满足两种类型的平台要求 |
+| 都没有 | **不启动服务** | 把原因回给前端，绝不在缺权限时调 `startForeground` |
+
+清单里同时声明了这两种类型与对应的 `FOREGROUND_SERVICE_CONNECTED_DEVICE`／`FOREGROUND_SERVICE_LOCATION` 权限。判定在 `KeepAlivePlugin.allowedTypes()`，服务只接收插件算好的类型（`EXTRA_TYPES`），失败时会 `stopSelf()` 并写日志。
+
+「服务配置 → 网络自检」里的**前台服务保活**会显示是否真的启动成功；没成功时会带出原因，不会显示成「已就绪」。
+
 ## 验证
 
 `npm test` 构建真实后端与请求桥后验证：所有页面入口注入、启动顺序、外部请求转发、网络诊断，以及不提供 Node Buffer、使用浏览器数字计时器的隔离环境中离线启动、注册登录、权限和地图图片处理。原有本地行程、设备适配与实况配置测试继续运行。
 
 2026-10-13 本轮验证：网络相关 5 项、原有移动端 26 项，以及根目录的路由、Watch、账号和前端 69 项均通过；`npm run check` 通过。受当前环境限制，使用已有 esbuild 0.27.7 单独构建后端与请求桥验证；依赖下载被网络权限阻止，完整原生模块构建未运行。当前环境没有 JDK、Android SDK 或 adb，未生成 APK，也未完成安卓真机联网测试。
+
+2026-10-13 前台服务闪退修复（换到有 JDK 22 与 Android SDK 的机器上构建）：`cd mobile && npm test` **32 项**通过（新增 1 项原生静态用例）；`npm run apk` 构建成功，产物 `versionName 0.6.1`／`versionCode 7`；`aapt2` 读包内二进制清单得 `foregroundServiceType=0x18`（connectedDevice `0x10` \| location `0x08`），三个 `FOREGROUND_SERVICE*` 权限均在其中。**本机仍无 adb 与模拟器，未在实体安卓机上复测**，「开始漫游」是否还会闪退需要装机确认。
