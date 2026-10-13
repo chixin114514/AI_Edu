@@ -60,7 +60,10 @@ async function runDiagnostics() {
   lines.push(`安全上下文        ${mark(globalThis.isSecureContext)}（蓝牙与定位的前提）`);
   lines.push(`网页蓝牙接口      ${mark(!!globalThis.navigator?.bluetooth)}${globalThis.navigator?.bluetooth ? '' : '  ← 未安装适配层'}`);
   lines.push(`定位接口          ${mark(!!globalThis.navigator?.geolocation)}`);
-  lines.push(`前台服务保活      ${globalThis.__manxingKeepAlive ? '✓ 已就绪' : '✗ 未安装（非 App 环境？）'}`);
+  // 保活要先看有没有启动成功：权限不足时原生层会拒绝启动（否则会崩），
+  // 那种情况下不能显示"已就绪"，要给出原因。
+  const alive = globalThis.__manxingKeepAlive, aliveReason = alive?.reason?.();
+  lines.push(`前台服务保活      ${alive ? (aliveReason ? `⚠ 未启动：${aliveReason}` : '✓ 已就绪') : '✗ 未安装（非 App 环境？）'}`);
   lines.push(`后台趋势保留      ${globalThis.__manxingKeepBackgroundTrends ? '✓ 开启' : '✗ 关闭（网页端行为）'}`);
 
   const motion = await new Promise(resolve => {
