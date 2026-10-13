@@ -11,12 +11,12 @@ if (typeof proc.exit !== 'function') proc.exit = () => {};
 globalThis.process = proc;
 export const process = proc;
 
-// server/index.js 只用到 Buffer.byteLength 和 Buffer.from(字符串)。
+// 请求体、登录摘要与地图图片需要的 Buffer 子集。
 class MiniBuffer extends Uint8Array {
   static from(value, encoding) {
     if (typeof value === 'string') {
-      const bytes = encoding === 'utf8' || !encoding
-        ? new TextEncoder().encode(value)
+      const bytes = encoding === 'hex'
+        ? Uint8Array.from(value.match(/.{2}/g) || [], pair => parseInt(pair, 16))
         : new TextEncoder().encode(value);
       return new MiniBuffer(bytes);
     }
@@ -25,7 +25,15 @@ class MiniBuffer extends Uint8Array {
   static byteLength(value) {
     return typeof value === 'string' ? new TextEncoder().encode(value).length : value?.length || 0;
   }
+  equals(other) {
+    return this.length === other.length && this.every((byte, i) => byte === other[i]);
+  }
   toString(encoding) {
+    if (encoding === 'base64') {
+      let binary = '';
+      for (let i = 0; i < this.length; i += 8192) binary += String.fromCharCode(...this.subarray(i, i + 8192));
+      return btoa(binary);
+    }
     return encoding === 'hex'
       ? [...this].map(b => b.toString(16).padStart(2, '0')).join('')
       : new TextDecoder().decode(this);

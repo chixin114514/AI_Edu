@@ -14,7 +14,7 @@ export function createWatchRelay({now=Date.now}={}){
     }
     for(const [ip,a] of attempts)if(t-a.at>=PAIR_TTL)attempts.delete(ip);
   }
-  const timer=setInterval(purge,1000);timer.unref();
+  const timer=setInterval(purge,1000);timer.unref?.();
   function revokeOwner(owner){for(const [id,l] of links)if(l.owner===owner)links.delete(id);}
   function device(token){
     purge();ensure(typeof token==='string'&&/^[a-f0-9]{64}$/.test(token),'配对已失效，请重新配对',401);
