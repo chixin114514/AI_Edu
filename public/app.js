@@ -800,16 +800,23 @@ async function render(){
     state.journalTrip=state.trip.id;
     loadJournal().then(()=>{if(state.page==='journey')render();}).catch(()=>{});
   }
-  $('#app').dataset.page=state.page;$$('[data-page]').forEach(b=>{b.classList.toggle('active',b.dataset.page===state.page);if(b.dataset.page===state.page)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');});document.title=`${state.page==='auth'?(state.user?'我的账号':state.authMode==='register'?'注册':'登录'):labels[state.page]} · 慢行`;if(['ops','report'].includes(state.page))$('#app').innerHTML='<div class="loading">加载中…</div>';try{const html=await ({plan:planPage,trip:tripPage,journey:journeyPage,report:reportPage,ops:opsPage,auth:authPage}[state.page])();if(version!==renderVersion)return;$('#app').innerHTML=(state.offline?'<div class="notice">现在没有网络，只能查看已保存的行程。</div>':'')+html;updateSensors();mountRouteMaps(state.trip);if(state.page==='trip')loadWeatherLive();}catch(e){if(version===renderVersion)$('#app').innerHTML=`<div class="empty"><h2>没加载出来</h2><p>${esc(e.message)}</p><button class="secondary" id="retry">再试一次</button></div>`;}}
+  $('#app').dataset.page=state.page;$('.main-nav').dataset.active=state.page;$$('[data-page]').forEach(b=>{b.classList.toggle('active',b.dataset.page===state.page);if(b.dataset.page===state.page)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');});document.title=`${state.page==='auth'?(state.user?'我的账号':state.authMode==='register'?'注册':'登录'):labels[state.page]} · 慢行`;
+  // 手记和运营页要先等接口返回：等得久了才换成加载提示，免得每次切换都闪一下。
+  const slow=['ops','report'].includes(state.page)?setTimeout(()=>{if(version===renderVersion)$('#app').innerHTML='<div class="loading">加载中…</div>';},260):0;
+  try{const html=await ({plan:planPage,trip:tripPage,journey:journeyPage,report:reportPage,ops:opsPage,auth:authPage}[state.page])();if(version!==renderVersion)return;$('#app').innerHTML=(state.offline?'<div class="notice">现在没有网络，只能查看已保存的行程。</div>':'')+html;updateSensors();mountRouteMaps(state.trip);if(state.page==='trip')loadWeatherLive();}catch(e){if(version===renderVersion)$('#app').innerHTML=`<div class="empty"><h2>没加载出来</h2><p>${esc(e.message)}</p><button class="secondary" id="retry">再试一次</button></div>`;}finally{clearTimeout(slow);}}
 function currentRoutePath(){return state.page==='auth'?(state.user?'/account':state.authMode==='register'?'/register':'/login'):pageRoutes[state.page].path;}
 function navigate(page,{replace=false}={}){
   const route=page==='auth'?(state.user?pageRoutes.account:pageRoutes.login):Object.hasOwn(pageRoutes,page)?pageRoutes[page]:null;if(!route)return;
   const menu=$('#more-menu');if(menu)menu.open=false;
+  const from=`${state.page}:${state.authMode}`;
   state.page=route.page;if(route.authMode)state.authMode=route.authMode;
-  const path=currentRoutePath();
+  const path=currentRoutePath(),changed=from!==`${state.page}:${state.authMode}`;
   if(location.pathname!==path||location.hash)history[replace?'replaceState':'pushState'](null,'',path);
-  render();window.scrollTo({top:0});
+  // 新内容换上去之后再回到顶部：手记页要等接口，先滚动会看到旧页面跳一下。
+  render().then(()=>{window.scrollTo({top:0});if(changed)playPageEnter();});
 }
+// 换页时让新内容轻轻浮上来；同一页内的重绘不播，免得每次操作都闪。
+function playPageEnter(){const app=$('#app');app.classList.remove('page-enter');void app.offsetWidth;app.classList.add('page-enter');}
 function applyLocationRoute(){
   const route=resolvePageRoute(location.pathname,location.hash)||pageRoutes.plan;
   state.page=route.page;if(route.authMode)state.authMode=route.authMode;
@@ -1007,6 +1014,6 @@ async function init(){
 }
 init();
 window.addEventListener('storage',e=>{if(e.key==='mx-account-change')location.reload();});
-window.addEventListener('popstate',()=>{applyLocationRoute();render();});
+window.addEventListener('popstate',()=>{applyLocationRoute();render().then(playPageEnter);});
 window.addEventListener('hashchange',()=>{const page=location.hash.replace(/^#\/?/,'');if(page==='auth'||Object.hasOwn(pageRoutes,page)){applyLocationRoute();render();}});
 if('serviceWorker' in navigator&&window.isSecureContext)navigator.serviceWorker.register('/sw.js').catch(()=>{});
