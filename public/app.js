@@ -10,6 +10,8 @@ const ICONS={
   plus:'<path d="M12 5v14M5 12h14"/>',
   check:'<path d="m5 12.5 4.5 4.5L19 7.5"/>',
   close:'<path d="M6 6l12 12M18 6 6 18"/>',
+  up:'<path d="m6 14 6-6 6 6"/>',
+  down:'<path d="m6 10 6 6 6-6"/>',
   download:'<path d="M12 4v11m-4-4 4 4 4-4M5 20h14"/>',
   nav:'<path d="M12 3 5 20l7-4 7 4z"/>',
   star:'<path d="m12 3.5 2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8L3.5 9.7l5.9-.9z"/>',
@@ -19,6 +21,8 @@ const ICONS={
 const icon=name=>`<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name]||''}</svg>`;
 const CATEGORY_TONE={自然:'nature',人文:'culture',建筑:'arch',展览:'expo',美食:'food',休息:'rest',终点:'end'};
 const INTEREST_EMOJI={自然:'🌿',人文:'🏛️',建筑:'🏙️',展览:'🖼️',美食:'🍜'};
+// 行程只排当天。更早生成的行程里可能存着 25:10 这样的时刻，显示成「次日 01:10」。
+const dayTime=t=>{const m=/^(\d{2,}):(\d{2})$/.exec(t||'');return m&&Number(m[1])>=24?`次日 ${String(Number(m[1])%24).padStart(2,'0')}:${m[2]}`:t||'';};
 const tag=category=>category?`<span class="tag tone-${CATEGORY_TONE[category]||'rest'}">${esc(category)}</span>`:'';
 const fallbackRegions=[['浙江省','杭州市','宁波市'],['北京市','北京市'],['上海市','上海市'],['广东省','广州市','深圳市'],['四川省','成都市'],['重庆市','重庆市'],['江苏省','南京市','苏州市']].map(([name,...cities])=>({name,cities:cities.map(name=>({name,districts:[]}))}));
 const draft=readDraft();
@@ -238,11 +242,13 @@ function diningPlaces(trip){
   return `<section class="card dining"><div class="card-head"><h2>附近的餐厅</h2>${badge(places.length+' 家')}</div><div class="dining-grid">${places.map(p=>`<article class="dining-item"><h3>${esc(p.name)}</h3>${commerceInfo(p)}<p class="muted">${esc(p.description)}</p><div class="stop-actions">${inDay.has(p.id)?'<span class="tag tone-nature">已在当天行程里</span>':`<button type="button" class="chip-btn strong" data-add-stop="${esc(p.id)}">${icon('plus')}加进第 ${state.day} 天</button>`}<button type="button" class="chip-btn" data-stop-detail="${esc(p.id)}">详情</button>${p.source_url?`<a class="chip-btn" href="${esc(p.source_url)}" target="_blank" rel="noopener noreferrer">高德</a>`:''}</div></article>`).join('')}</div>${source?`<p class="fineprint">人均和评分来自${esc(source)}，仅供参考。</p>`:''}</section>`;
 }
 function mustVisitList(){if(!state.mustVisit)state.mustVisit=[...(state.trip?.preferences?.must_visit||[])].map(m=>({name:m.name,lat:m.lat,lng:m.lng,category:m.category,duration_min:m.duration_min}));return state.mustVisit;}
-function timeline(day){const lockedNames=new Set(mustVisitList().map(m=>m.name));return `<ol class="timeline" data-day="${day.day}">${day.stops.map((p,index)=>{
+function timeline(day,stops=day.stops,pending=false){const lockedNames=new Set(mustVisitList().map(m=>m.name)),last=stops.filter(p=>p.category!=='终点').length-1;return `<ol class="timeline" data-day="${day.day}">${stops.map((p,index)=>{
  const reason=cleanStopReason(p.recommendation_reason,p.name)||defaultStopReason(p,state.trip?.preferences);
- const previous=index?day.stops[index-1]:state.trip?.preferences?.start_point;
+ const previous=index?stops[index-1]:state.trip?.preferences?.start_point;
  const locked=lockedNames.has(p.name);
- return `<li class="stop"><span class="stop-no">${index+1}</span><div class="stop-main"><div class="stop-top">${p.arrival?`<time>${esc(p.arrival)}</time>`:''}${tag(p.category)}${locked?'<span class="tag tone-must">必去</span>':''}</div><h3 class="stop-name">${esc(p.name)}</h3>${commerceInfo(p,{compact:true})}<p class="stop-desc">${esc(reason)}</p><div class="stop-actions">${previous?`<a class="chip-btn strong" href="${esc(amapNavigation(previous,p))}" target="_blank" rel="noopener noreferrer">${icon('nav')}导航</a>`:''}<button type="button" class="chip-btn" data-stop-detail="${esc(p.id)}">详情</button><button type="button" class="chip-btn ${locked?'on':''}" data-must="${esc(p.id)}" aria-pressed="${locked}" aria-label="${locked?'取消必去':'设为必去'}">${icon('star')}必去</button>${p.category==='终点'?'':`<button type="button" class="chip-btn quiet" data-stop-remove="${esc(p.id)}">移出</button>`}</div></div></li>`;
+ // 终点由规划时的设置决定，始终在最后，不参与排序。
+ const move=p.category==='终点'?'':`<span class="stop-move"><button type="button" class="icon-btn" data-stop-move="-1" data-stop="${esc(p.id)}" aria-label="上移" ${index===0?'disabled':''}>${icon('up')}</button><button type="button" class="icon-btn" data-stop-move="1" data-stop="${esc(p.id)}" aria-label="下移" ${index>=last?'disabled':''}>${icon('down')}</button></span>`;
+ return `<li class="stop"><span class="stop-no">${index+1}</span><div class="stop-main"><div class="stop-top">${p.arrival&&!pending?`<time>${esc(dayTime(p.arrival))}</time>`:''}${tag(p.category)}${locked?'<span class="tag tone-must">必去</span>':''}${move}</div><h3 class="stop-name">${esc(p.name)}</h3>${commerceInfo(p,{compact:true})}<p class="stop-desc">${esc(reason)}</p><div class="stop-actions">${previous?`<a class="chip-btn strong" href="${esc(amapNavigation(previous,p))}" target="_blank" rel="noopener noreferrer">${icon('nav')}导航</a>`:''}<button type="button" class="chip-btn" data-stop-detail="${esc(p.id)}">详情</button><button type="button" class="chip-btn ${locked?'on':''}" data-must="${esc(p.id)}" aria-pressed="${locked}" aria-label="${locked?'取消必去':'设为必去'}">${icon('star')}必去</button>${p.category==='终点'?'':`<button type="button" class="chip-btn quiet" data-stop-remove="${esc(p.id)}">移出</button>`}</div></div></li>`;
 }).join('')}</ol>`;}
 
 // ---------------- 景点详情与增删 ----------------
@@ -263,29 +269,61 @@ function stopPayload(stop){
   const known=inTrip||(state.trip?.poi_catalog||[]).some(poi=>poi.id===stop.id)||state.pois.some(poi=>poi.id===stop.id);
   return known?{id:stop.id}:{name:stop.name,lat:stop.lat,lng:stop.lng,category:stop.category,duration_min:stop.duration_min,indoor:stop.indoor===true};
 }
-async function saveStops(list,{day=state.day}={}){
+async function saveStops(list,{day=state.day,autoPlace}={}){
   const revision=accountRevision;
+  const stops=list.filter(Boolean).filter(stop=>stop.id!=='destination');
   try{
-    const result=await api(`/trip/${state.trip.id}/stops`,{day,stops:list.filter(Boolean).filter(stop=>stop.id!=='destination')});
+    // auto_place：新加的那一站在列表里的下标，由服务端挑位置（餐厅赶饭点，其它地点挑最顺路的）。
+    const result=await api(`/trip/${state.trip.id}/stops`,{day,stops,...(autoPlace?{auto_place:stops.indexOf(autoPlace)}:{})});
     if(revision!==accountRevision)return false;
-    state.trip=result.trip;state.day=day;state.mustVisit=null;state.suggestion=null;state.stopDetail=null;closeModal();cacheTrip();
+    state.trip=result.trip;state.day=day;state.mustVisit=null;state.suggestion=null;state.stopDetail=null;state.reorder=null;closeModal();cacheTrip();
     await render();
+    const placed=result.placed?`已把「${result.placed.name}」排在第 ${result.placed.index+1} 站${result.placed.meal?`，正好是${result.placed.meal}时间`:'，这个位置最顺路'}`:'行程已更新';
     // 服务端不会因为超约束就悄悄删站，只把问题列出来，这里先说第一条。
-    toast(result.warnings?.length?result.warnings[0]:'行程已更新');
+    toast(result.warnings?.length?`${result.placed?placed+'。':''}${result.warnings[0]}`:placed);
     return true;
   }catch(error){toast(error.message);return false;}
 }
+// 调整顺序先只改本地：实况模式下每换一次相邻两站都要重新请求步行路线，攒到「保存顺序」时一次算完。
+function orderedStops(){
+  const stops=dayStops(),ids=state.reorder?.key===viewKey()?state.reorder.ids:null;
+  if(!ids)return stops;
+  const moved=ids.map(id=>stops.find(stop=>stop.id===id)).filter(Boolean),rest=stops.filter(stop=>!ids.includes(stop.id));
+  // 行程在别处变过（比如途中接受了改线）时，本地顺序对不上，直接作废。
+  return moved.length===ids.length&&rest.every(stop=>stop.id==='destination')?[...moved,...rest]:stops;
+}
+function moveStop(id,delta){
+  const list=orderedStops().filter(stop=>stop.id!=='destination'),from=list.findIndex(stop=>stop.id===id),to=from+delta;
+  if(from<0||to<0||to>=list.length)return;
+  [list[from],list[to]]=[list[to],list[from]];
+  const ids=list.map(stop=>stop.id),saved=dayStops().filter(stop=>stop.id!=='destination').map(stop=>stop.id);
+  state.reorder=ids.join('\n')===saved.join('\n')?null:{key:viewKey(),ids};
+  paintItinerary();
+}
+function itinerary(day){
+  const stops=orderedStops(),pending=stops!==day.stops;
+  return `${pending?`<div class="banner reorder-bar"><span>顺序改了，保存后重新计算到达时间</span><span class="bar-actions"><button type="button" class="chip-btn" id="reorder-cancel">撤销</button><button type="button" class="primary" id="reorder-save">保存顺序</button></span></div>`:''}${timeline(day,stops,pending)}<button type="button" class="add-stop" id="add-place">${icon('plus')}添加地点</button>`;
+}
+function paintItinerary(){const day=state.trip?.days?.[state.day-1];if(day&&$('#itinerary'))$('#itinerary').innerHTML=itinerary(day);}
 async function removeStop(id){
-  const rest=dayStops().filter(stop=>stop.id!==id);
+  const rest=orderedStops().filter(stop=>stop.id!==id);
   if(rest.length<2)return toast('每天至少要保留两个地点，可以先把别的地点加进来');
   await saveStops(rest.map(stopPayload));
 }
 async function addStop(place){
   const payload=stopPayload(place);
   if(!payload)return;
-  const current=dayStops().filter(stop=>stop.id!=='destination');
+  const current=orderedStops().filter(stop=>stop.id!=='destination');
   if(current.some(stop=>stop.id===place.id||stop.name===place.name))return toast('这个地点已经在当天行程里了');
-  await saveStops([...current.map(stopPayload),payload]);
+  if(current.length>=8)return toast('一天最多 8 个地点，先移出一个再加');
+  await saveStops([...current.map(stopPayload),payload],{autoPlace:payload});
+}
+// 添加地点时可选的候选：这次检索到、但没排进当天的地点，离路线近的在前。
+function stopCandidates(){
+  const inDay=orderedStops(),taken=new Set(inDay.flatMap(stop=>[stop.id,stop.name]));
+  const pool=state.trip?.poi_catalog?.length?state.trip.poi_catalog:state.pois;
+  const meters=(a,b)=>Math.hypot((a.lng-b.lng)*111000*Math.cos((a.lat+b.lat)*Math.PI/360),(a.lat-b.lat)*111000);
+  return pool.filter(poi=>!taken.has(poi.id)&&!taken.has(poi.name)).map(poi=>({poi,away:Math.min(...inDay.map(stop=>meters(stop,poi)))})).sort((a,b)=>a.away-b.away).slice(0,12);
 }
 function showStopDetail(id){
   if(!findStop(id))return;
@@ -304,7 +342,7 @@ function stopDetailMarkup(){
   const row=(label,value)=>`<li><span>${label}</span><strong>${value}</strong></li>`;
   return `<div class="modal-tags">${tag(stop.category)}${stop.indoor?'<span class="tag tone-rest">室内</span>':''}${locked?'<span class="tag tone-must">必去</span>':''}</div><h2>${esc(stop.name)}</h2>${stop.description?`<p>${esc(stop.description)}</p>`:''}
   <ul class="detail-list">
-    ${scheduled&&stop.arrival?row('时间',`${esc(stop.arrival)} — ${esc(stop.departure)} · 停留 ${stop.duration_min} 分钟`):''}
+    ${scheduled&&stop.arrival?row('时间',`${esc(dayTime(stop.arrival))} — ${esc(dayTime(stop.departure))} · 停留 ${stop.duration_min} 分钟`):''}
     ${scheduled&&stop.leg?.distance_m?row('从上一站走过来',`${stop.leg.distance_m} m · ${stop.leg.duration_min} 分钟`):''}
     ${stop.per_capita_cost!=null||stop.rating!=null?row('参考人均 / 评分',`${stop.per_capita_cost!=null?'¥'+stop.per_capita_cost:'未知'} / ${stop.rating!=null?stop.rating+' 分':'未知'}`):''}
     ${stop.reservation?row('开放与预约',esc(stop.reservation)):''}
@@ -453,7 +491,7 @@ const viewKey=()=>`${state.trip?.id||''}:${state.day}`;
 const liveData=()=>state.config?.data_mode==='live';
 
 // ---------------- 地点选择器：自定义起点、终点、必去地点与换乘端点 ----------------
-const pickerTargets={start:'起点',end:'终点',must:'必去地点','transit-from':'换乘出发地','transit-to':'换乘目的地'};
+const pickerTargets={start:'起点',end:'终点',must:'必去地点',stop:'地点','transit-from':'换乘出发地','transit-to':'换乘目的地'};
 const pickerLabel=target=>pickerTargets[target]||'地点';
 function placeResultsMarkup(){
   const p=state.picker;if(!p)return '';
@@ -466,8 +504,11 @@ function placeResultsMarkup(){
 function paintPlaceResults(){if($('#place-results'))$('#place-results').innerHTML=placeResultsMarkup();}
 function placePicker(target){
   state.picker={target,results:[],loading:false,error:'',searched:false};
-  const label=pickerLabel(target);
-  return `<h2>选择一个${label}</h2><form id="place-search" class="search-row"><input name="keyword" aria-label="地点名称" minlength="2" maxlength="40" placeholder="搜地点，比如 西湖文化广场" required><button type="submit" class="primary" id="place-search-button">${icon('search')}搜索</button></form><div id="place-results" role="status" aria-live="polite">${placeResultsMarkup()}</div>`;
+  const search=`<form id="place-search" class="search-row"><input name="keyword" aria-label="地点名称" minlength="2" maxlength="40" placeholder="搜地点，比如 西湖文化广场" required><button type="submit" class="primary" id="place-search-button">${icon('search')}搜索</button></form><div id="place-results" role="status" aria-live="polite">${placeResultsMarkup()}</div>`;
+  if(target!=='stop')return `<h2>选择一个${pickerLabel(target)}</h2>${search}`;
+  // 加进当天行程：实况模式可以按名称搜；两种模式都能从候选里直接挑。
+  const candidates=stopCandidates(),distance=m=>m<1000?`${Math.round(m/10)*10} m`:`${(m/1000).toFixed(1)} km`;
+  return `<h2>添加到第 ${state.day} 天</h2>${liveData()?search:''}${candidates.length?`<h3>${liveData()?'或者从候选地点里挑':'从候选地点里挑'}</h3><div class="place-list">${candidates.map(({poi,away})=>`<button type="button" class="place-item" data-add-stop="${esc(poi.id)}"><strong>${esc(poi.name)}</strong><small>${tag(poi.category)} 离路线约 ${distance(away)}</small></button>`).join('')}</div>`:liveData()?'':'<p class="muted">没有可以添加的候选地点了。</p>'}`;
 }
 async function runPlaceSearch(keyword){
   const target=state.picker?.target;if(!target)return;
@@ -481,6 +522,8 @@ async function runPlaceSearch(keyword){
   paintPlaceResults();
 }
 function applyPickedPlace(target,place){
+  // 加进当天行程：保存成功后弹窗才关，失败时留着让用户换一个。
+  if(target==='stop')return addStop(place);
   const point={name:place.name,lat:place.lat,lng:place.lng};
   if(target==='start'||target==='end'){
     if(target==='start')state.planStartPoint=point;else state.planEndPoint=point;
@@ -604,7 +647,7 @@ function tripPage(){
   ${must.length?`<div class="banner"><span>${icon('star')}必去：${must.map(m=>esc(m.name)).join('、')}</span><button class="primary" id="replan-must">按必去重新规划</button></div>`:''}
   ${t.data_mode==='demo'?'<p class="notice">演示数据：距离、时间和天气都是样例，不能用来导航。</p>':''}`
   +stats([['站点',`${d.stops.length} 站`],['步行',`${(d.distance_m/1000).toFixed(1)} km`],['时长',`${(d.duration_min/60).toFixed(1)} 小时`],['花费',d.unknown_cost_count?'待确认':`¥${d.cost}`,d.unknown_cost_count?`${d.unknown_cost_count} 处价格未知`:`预算 ¥${t.preferences.budget}`]])
-  +`<div class="layout"><section class="card"><div class="card-head"><h2>行程安排</h2>${t.days.length>1?`<div class="segmented day-tabs">${t.days.map(day=>`<button type="button" class="${day.day===state.day?'selected':''}" data-day="${day.day}">第 ${day.day} 天</button>`).join('')}</div>`:''}</div>${timeline(d)}${skipped}</section>
+  +`<div class="layout"><section class="card"><div class="card-head"><h2>行程安排</h2>${t.days.length>1?`<div class="segmented day-tabs">${t.days.map(day=>`<button type="button" class="${day.day===state.day?'selected':''}" data-day="${day.day}">第 ${day.day} 天</button>`).join('')}</div>`:''}</div><div id="itinerary">${itinerary(d)}</div>${skipped}</section>
   <aside class="side-stack"><section class="card flush"><div class="card-head pad"><h2>地图</h2></div>${mapView(d.stops)}</section>${weather}
   <section class="card note-card"><div class="card-head"><h3>为什么这样排</h3>${badge(t.explanation_source)}</div><p>${esc(t.explanation)}</p></section>
   <section class="card note-card rainy"><h3><span aria-hidden="true">🌧️</span> 下雨的话</h3><p>${d.plan_b.stops.length?d.plan_b.stops.map(p=>esc(p.name)).join(' → '):'这天没有合适的室内路线，下雨建议改期或提前结束。'}</p></section></aside></div>
@@ -658,7 +701,7 @@ function journeyPage(){
   if(!state.session||state.session.ended_at)return `<section class="ready"><img src="/lake.svg" alt=""><div class="ready-body"><p class="trip-meta">${esc(state.trip.preferences.city)} · 第 ${state.day} 天</p><h1>你的行程已准备好</h1><p>每到一站点一下打卡，累了、饿了随时说。</p><button class="primary big" id="start-journey">开始第 ${state.day} 天漫游 ${icon('arrow')}</button></div></section>`;
   const s=state.session,d=state.trip.days[s.day-1],current=d.stops[s.current_index],paused=s.status==='paused',finished=!current&&!paused;
   const previous=current?(s.current_index?d.stops[s.current_index-1]:state.trip.preferences.start_point):null,next=current?d.stops[s.current_index+1]:null;
-  return `<div class="journey-layout"><div class="journey-main"><section class="now ${paused?'paused':''}"><div class="now-top"><span class="now-label">${paused?'行程已暂停':current?`第 ${s.current_index+1} 站 · 共 ${d.stops.length} 站`:'全部打卡完成'}</span>${finished?'':'<button class="now-end" id="end-journey">结束漫游</button>'}</div><h1>${paused?'先照顾好自己':current?esc(current.name):'今天的行程走完了'}</h1><p class="now-meta">${paused?'停下来，到安全的地方，找身边的人帮忙。':current?`${esc(current.arrival)} — ${esc(current.departure)} · 停留 ${current.duration_min} 分钟`:'结束漫游，就能看到今天的手记。'}</p>${current&&!paused?commerceInfo(current):''}<div class="journey-progress" role="progressbar" aria-label="打卡进度" aria-valuemin="0" aria-valuemax="${d.stops.length}" aria-valuenow="${s.current_index}"><span style="width:${Math.min(100,s.current_index/Math.max(1,d.stops.length)*100)}%"></span></div>${current&&!paused?`<div class="now-actions"><button class="primary big" id="checkin">${icon('check')}逛完了，去下一站</button>${previous?`<a class="now-nav" href="${esc(amapNavigation(previous,current))}" target="_blank" rel="noopener noreferrer">${icon('nav')}导航</a>`:''}</div>${next?`<p class="now-next">下一站：${esc(next.name)}</p>`:''}`:''}${finished?`<button class="primary big" id="end-journey">结束并看手记 ${icon('arrow')}</button>`:''}</section>
+  return `<div class="journey-layout"><div class="journey-main"><section class="now ${paused?'paused':''}"><div class="now-top"><span class="now-label">${paused?'行程已暂停':current?`第 ${s.current_index+1} 站 · 共 ${d.stops.length} 站`:'全部打卡完成'}</span>${finished?'':'<button class="now-end" id="end-journey">结束漫游</button>'}</div><h1>${paused?'先照顾好自己':current?esc(current.name):'今天的行程走完了'}</h1><p class="now-meta">${paused?'停下来，到安全的地方，找身边的人帮忙。':current?`${esc(dayTime(current.arrival))} — ${esc(dayTime(current.departure))} · 停留 ${current.duration_min} 分钟`:'结束漫游，就能看到今天的手记。'}</p>${current&&!paused?commerceInfo(current):''}<div class="journey-progress" role="progressbar" aria-label="打卡进度" aria-valuemin="0" aria-valuemax="${d.stops.length}" aria-valuenow="${s.current_index}"><span style="width:${Math.min(100,s.current_index/Math.max(1,d.stops.length)*100)}%"></span></div>${current&&!paused?`<div class="now-actions"><button class="primary big" id="checkin">${icon('check')}逛完了，去下一站</button>${previous?`<a class="now-nav" href="${esc(amapNavigation(previous,current))}" target="_blank" rel="noopener noreferrer">${icon('nav')}导航</a>`:''}</div>${next?`<p class="now-next">下一站：${esc(next.name)}</p>`:''}`:''}${finished?`<button class="primary big" id="end-journey">结束并看手记 ${icon('arrow')}</button>`:''}</section>
   ${state.suggestion&&!paused?suggestionCard(state.suggestion):''}
   <section class="feel"><h2>现在感觉怎么样？</h2>${paused?'<p class="muted">路线建议已暂停。需要急救请拨打 120。</p>':`<div class="feel-grid"><button data-feedback="tired"><span class="feel-emoji" aria-hidden="true">😮‍💨</span><strong>有点累</strong><small>少走一点，找地方歇歇</small></button><button data-feedback="hungry"><span class="feel-emoji" aria-hidden="true">🍜</span><strong>想吃饭</strong><small>就近安排一家餐厅</small></button></div>`}<button class="help-btn" id="unwell">身体不舒服，需要帮助</button></section>
   ${current&&!paused?journalBlock(s.day,current):''}
@@ -783,9 +826,10 @@ document.addEventListener('click',async e=>{
   }
   if(b.dataset.place!==undefined){
     const place=state.picker?.results?.[Number(b.dataset.place)];if(!place)return;
-    applyPickedPlace(state.picker.target,place);return;
+    await applyPickedPlace(state.picker.target,place);return;
   }
   if(b.dataset.stopDetail!==undefined){showStopDetail(b.dataset.stopDetail);return;}
+  if(b.dataset.stopMove!==undefined){moveStop(b.dataset.stop,Number(b.dataset.stopMove));return;}
   if(b.dataset.stopRemove!==undefined){await removeStop(b.dataset.stopRemove);return;}
   if(b.dataset.addStop!==undefined){await addStop(findStop(b.dataset.addStop));return;}
   if(b.dataset.journalPhotoRemove!==undefined){await removeJournalPhoto(Number(b.dataset.journalPhotoRemove));return;}
@@ -815,6 +859,9 @@ document.addEventListener('click',async e=>{
       if(!liveData())throw Error('地点检索需要开启实况服务（配置高德 Key）');
       modal(placePicker(id==='pick-must'?'must':id==='pick-start'?'start':'end'));
     }
+    if(id==='add-place')modal(placePicker('stop'));
+    if(id==='reorder-save')await saveStops(orderedStops().map(stopPayload));
+    if(id==='reorder-cancel'){state.reorder=null;paintItinerary();}
     if(id==='clear-start'){state.planStartPoint=null;await render();}
     if(id==='clear-end'){state.planEndPoint=null;await render();}
     if(id==='query-transit')await queryTransit();
