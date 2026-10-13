@@ -515,3 +515,50 @@ summary { cursor:pointer; }
 .controls-events legend { font-size:14px; font-weight:650; margin-bottom:10px; }
 .controls-event-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
 .controls-event-grid button:last-child { grid-column:1/-1; }
+
+/* ---------- 液态玻璃 ----------
+   浮在内容上面的几层（标签栏、顶栏、弹窗、提示条、悬浮面板）做成玻璃；正文卡片保持基本不透明，文字才好读。
+   不支持 backdrop-filter 的旧 WebView 沿用上面的不透明样式；系统开了「降低透明度」时也退回不透明。 */
+.glass-defs { position:absolute; width:0; height:0; overflow:hidden; pointer-events:none; }
+/* 玻璃要压在有颜色的东西上才看得出来：给整页铺一层固定不动的柔和色块。 */
+body::before { content:""; position:fixed; inset:0; z-index:-1; pointer-events:none; background:
+  radial-gradient(70vmax 55vmax at -10% -5%,#cfeedd 0,transparent 62%),
+  radial-gradient(60vmax 50vmax at 110% 18%,#ffeab8 0,transparent 58%),
+  radial-gradient(70vmax 60vmax at 95% 105%,#cfe4fb 0,transparent 62%),
+  radial-gradient(55vmax 45vmax at -5% 85%,#e6ddfb 0,transparent 56%); }
+.card,.stat,.recent-item,.lib-item { box-shadow:var(--shadow),inset 0 1px 0 #fff; }
+.now { box-shadow:0 12px 30px #1f7a5540,inset 0 1px 0 #ffffff59,inset 0 0 0 1px #ffffff1f; }
+@supports ((-webkit-backdrop-filter:blur(1px)) or (backdrop-filter:blur(1px))) {
+  .card,.stat,.recent-item,.lib-item { background:#ffffffeb; }
+  .card .stat,.note-card,.summary-card { box-shadow:none; }
+  .topbar { background:none; border-bottom:0; }
+  /* 模糊放在伪元素上：.topbar 自己一旦带 backdrop-filter，里面 position:fixed 的标签栏就会被它框住。 */
+  .topbar::before { content:""; position:absolute; inset:0; z-index:-1; background:#f4f6f18c; -webkit-backdrop-filter:blur(18px) saturate(1.7); backdrop-filter:blur(18px) saturate(1.7); box-shadow:inset 0 -1px 0 #ffffffb3,0 1px 0 #17251f0f; }
+  .account-button,.more-menu>summary { background:#ffffff99; border-color:#ffffffbf; }
+  .more-menu-content,.journey-controls-panel { background:#ffffffcc; border-color:#ffffffbf; -webkit-backdrop-filter:blur(22px) saturate(1.7); backdrop-filter:blur(22px) saturate(1.7); }
+  .cta-bar { background:#ffffff80; -webkit-backdrop-filter:blur(14px) saturate(1.6); backdrop-filter:blur(14px) saturate(1.6); box-shadow:inset 0 1px 0 #ffffffe6,inset 0 0 0 1px #ffffff80,0 8px 24px #17251f1a; }
+  #toast { background:#17251fbf; border:1px solid #ffffff2e; -webkit-backdrop-filter:blur(16px) saturate(1.6); backdrop-filter:blur(16px) saturate(1.6); }
+  dialog { background:#ffffffd1; -webkit-backdrop-filter:blur(28px) saturate(1.8); backdrop-filter:blur(28px) saturate(1.8); box-shadow:0 30px 80px #17252040,inset 0 1px 0 #fff,inset 0 0 0 1px #ffffff99; }
+  dialog::backdrop { background:#17251f52; -webkit-backdrop-filter:blur(4px); backdrop-filter:blur(4px); }
+  /* 手机与 App：标签栏是一块浮起来的玻璃。宽屏下标签并在顶栏里，不需要。 */
+  @media(max-width:899px) {
+    :root { --nav-h:76px; }
+    .main-nav { left:12px; right:12px; bottom:calc(10px + env(safe-area-inset-bottom)); gap:2px; padding:6px; border:0; border-radius:32px; background:none; box-shadow:0 12px 32px #17251f2e,0 2px 8px #17251f14; }
+    .main-nav::before,.main-nav::after { content:""; position:absolute; inset:0; border-radius:inherit; pointer-events:none; }
+    /* 第一层：模糊加提饱和，再叠一层白。 */
+    .main-nav::before { z-index:-2; background:#ffffff73; -webkit-backdrop-filter:blur(14px) saturate(1.8); backdrop-filter:blur(14px) saturate(1.8); }
+    /* Blink 内核再加一道折射（glass.js 确认支持后才挂上这个类），模糊相应调轻，边缘才看得出弯折。 */
+    .glass-refract .main-nav::before { background:#ffffff59; backdrop-filter:blur(5px) url(#glass-nav) saturate(1.9) brightness(1.04); }
+    /* 第二层：边缘高光。 */
+    .main-nav::after { z-index:-1; box-shadow:inset 0 1px 1px #ffffffe6,inset 0 -1px 1px #ffffff66,inset 0 0 0 1px #ffffff59,inset 0 10px 16px -10px #ffffffcc; }
+    .main-nav a { border-radius:26px; color:#33443c; }
+    .main-nav a.active { color:var(--brand-dark); background:#ffffffbd; box-shadow:0 2px 8px #17251f1f,inset 0 1px 0 #fff; }
+  }
+}
+@media(prefers-reduced-transparency:reduce) {
+  body::before { display:none; }
+  .topbar::before,.main-nav::before,.cta-bar,#toast,dialog,dialog::backdrop,.more-menu-content,.journey-controls-panel { -webkit-backdrop-filter:none!important; backdrop-filter:none!important; }
+  .topbar::before { background:var(--bg)!important; }
+  .main-nav::before,.cta-bar,dialog,.more-menu-content,.journey-controls-panel,.card,.stat,.recent-item,.lib-item { background:var(--surface)!important; }
+  #toast { background:var(--ink)!important; }
+}
