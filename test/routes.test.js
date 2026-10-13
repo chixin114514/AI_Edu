@@ -53,11 +53,11 @@ test('offline navigation uses the matching cached page and never intercepts API 
   }
 });
 
-// ---------------- 外壳与样式：不留玻璃层，无障碍底线还在 ----------------
+// ---------------- 外壳与样式：玻璃只在操作层，无障碍底线还在 ----------------
 
 const asset=name=>readFile(new URL('../public/'+name,import.meta.url),'utf8');
 
-test('离线清单里的每个文件都能取到，已经删掉的折射脚本不在其中',async t=>{
+test('离线清单里的每个文件都能取到，标签栏的折射脚本也在其中',async t=>{
   const app=createApp({database:':memory:'});t.after(()=>app.emit('close'));
   const handlers=new Map(),installed=[];
   const context=vm.createContext({URL,Response,location:{origin:'https://travel.example'},self:{addEventListener(type,fn){handlers.set(type,fn);},clients:{claim(){}}},
@@ -70,17 +70,43 @@ test('离线清单里的每个文件都能取到，已经删掉的折射脚本�
     const first=await dispatch(app,file),response=first.status===302?await dispatch(app,first.headers.location):first;
     assert.equal(response.status,200,file);
   }
-  assert.ok(!installed.some(file=>/glass/.test(file)));
-  assert.equal((await dispatch(app,'/glass.js')).status,404);
+  // 折射脚本是外壳的一部分：离线清单里少了它，装好的 App 断网后标签栏就没有折射了。
+  assert.ok(installed.includes('/glass.js'));
+  assert.equal((await dispatch(app,'/glass.js')).status,200);
 });
 
-test('外壳没有玻璃层残留：布局和样式表里没有滤镜、模糊、渐变与投影',async()=>{
-  const [layout,css]=await Promise.all([asset('layout.html'),asset('style.css')]);
-  assert.doesNotMatch(layout,/glass|<filter|feDisplacementMap|nav-thumb/i);
-  for(const banned of ['backdrop-filter','box-shadow','text-shadow','gradient(','blur(','drop-shadow('])assert.ok(!css.includes(banned),'样式表里不该再有 '+banned);
-  assert.doesNotMatch(css,/(?:^|[;{\s])filter\s*:/m);
-  // 各页面入口由模板生成，跟着一起干净。
-  for(const name of Object.keys(pageRoutes))assert.doesNotMatch(await asset(`pages/${name}.html`),/glass|<filter|nav-thumb/i,name);
+test('玻璃只用在浮在纸面上的操作层：正文样式里仍然没有滤镜、模糊、渐变与投影',async()=>{
+  const [layout,css,glass]=await Promise.all([asset('layout.html'),asset('style.css'),asset('glass.js')]);
+  const marker='/* ---------- 液态玻璃';
+  assert.equal(css.split(marker).length,2,'玻璃规则集中在样式表的一节里');
+  const [paper,rest]=css.split(marker),section=rest.slice(0,rest.indexOf('@media(prefers-reduced-motion:reduce)'));
+  // 内容层（纸）守着原来的规矩。
+  for(const banned of ['backdrop-filter','box-shadow','text-shadow','gradient(','blur(','drop-shadow('])assert.ok(!paper.includes(banned),'正文样式里不该有 '+banned);
+  assert.doesNotMatch(paper,/(?:^|[;{\s])filter\s*:/m);
+  // 玻璃一节：整体包在特性检测里，旧内核沿用纸质样式；不用渐变，也不用 filter（只有 backdrop-filter）。
+  assert.match(section,/@supports \(\(-webkit-backdrop-filter:blur\(1px\)\) or \(backdrop-filter:blur\(1px\)\)\) and \(color:color-mix\(/);
+  for(const banned of ['gradient(','drop-shadow('])assert.ok(!section.includes(banned),'玻璃一节里不该有 '+banned);
+  assert.doesNotMatch(section,/(?:^|[;{\s])filter\s*:/m);
+  // 只允许给这几层写规则：顶栏、标签栏、主按钮坞、弹窗、提示条、更多菜单和管理员的悬浮面板。
+  const allowed=/^(?::root|\.glass-defs|\.topbar|\.more-menu-content|dialog(?:::backdrop)?|#toast|\.journey-controls(?:-panel)?|\.controls-launcher|(?:\.glass-refract )?\.main-nav(?: a|::before)?|\.dock(?:>\*| \.primary(?::active:not\(:disabled\))?| \.secondary)?)$/;
+  const selectors=[...('/*'+section).replace(/\/\*[\s\S]*?\*\//g,'').matchAll(/([^{};]+)\{/g)].map(match=>match[1].trim()).filter(text=>text&&!text.startsWith('@')).flatMap(text=>text.split(',').map(part=>part.trim()));
+  assert.ok(selectors.length>=12,'玻璃一节应当有规则');
+  for(const selector of selectors)assert.match(selector,allowed,'玻璃一节里出现了操作层以外的选择器：'+selector);
+  // 每一处模糊都同时写了带前缀的版本（iOS 上的 WebKit 仍然需要）；只有折射那条例外，它只给 Blink 用。
+  for(const line of section.split('\n').filter(text=>/[;{ ]backdrop-filter:/.test(text)&&!text.includes('url(#glass-nav)')))assert.ok(line.includes('-webkit-backdrop-filter:'),line.trim().slice(0,60));
+  // 系统要求降低透明度或提高对比度时，每一层玻璃都退回不透明。
+  const fallback=css.slice(css.indexOf('@media(prefers-reduced-transparency:reduce),(prefers-contrast:more)'));
+  assert.match(fallback,/backdrop-filter:\s*none\s*!important/);
+  for(const layer of ['.topbar','.main-nav','.dock .primary','.dock .secondary','dialog','#toast','.journey-controls-panel'])assert.ok(fallback.includes(layer),'回退里漏了 '+layer);
+  // 折射：滤镜只定义一次，脚本排在 app.js 之后（App 壳往 app.js 前面注入后端，锚点不能动），而且只在确认支持时才启用。
+  assert.equal((layout.match(/<filter /g)||[]).length,1);
+  assert.match(layout,/<filter id="glass-nav"[^>]*>[\s\S]*<feDisplacementMap [\s\S]*<\/filter>/);
+  assert.match(layout,/<script type="module" src="\/app\.js"><\/script>\s*<script type="module" src="\/glass\.js"><\/script>/);
+  assert.doesNotMatch(layout,/nav-thumb/);
+  assert.match(glass,/CSS\?\.supports\?\.\('backdrop-filter','url\(#glass-nav\)'\)/);
+  assert.match(glass,/if\(nav&&image&&refracts\)\{[\s\S]*classList\.add\('glass-refract'\)/);
+  // 各页面入口由模板生成，跟着一起带上滤镜定义。
+  for(const name of Object.keys(pageRoutes))assert.match(await asset(`pages/${name}.html`),/<filter id="glass-nav"/,name);
 });
 
 test('颜色只在 :root 里定义，模板里写死的颜色都出自这张表',async()=>{

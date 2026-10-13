@@ -1010,3 +1010,35 @@ test('各页模板不带表情符号；图标只留给没有文字的按钮，�
   assert.match(pages['规划（实况）'],/id="clear-start" aria-label="清除起点"/);
   assert.match(pages['途中（有调整建议，管理员面板展开）'],/id="close-journey-controls"/);
 });
+
+// ---------------- 主按钮坞：每页最要紧的按钮固定在拇指够得着的地方 ----------------
+
+test('规划、行程、途中三页的主按钮都在主按钮坞里，每页只有一个坞；暂停时不出现',async()=>{
+  const b=editBrowser();
+  const docks=html=>(html.match(/class="[^"]*\bdock\b[^"]*"/g)||[]).length;
+  const show=async(page,setup='')=>{await b.run(`(async()=>{${setup};state.page='${page}';await render();})()`);return b.node('#app').innerHTML;};
+  let html=await show('plan');
+  assert.match(html,/<div class="cta-bar dock"><button class="primary generate" type="submit" id="generate-button"/);
+  assert.equal(docks(html),1);
+  html=await show('trip');
+  assert.match(html,/<div class="dock"><button class="primary wide start" id="start-journey">开始漫游<\/button><\/div>/);
+  assert.equal(docks(html),1);
+  // 途中页：还没开始时是「开始」。
+  html=await show('journey','state.session=null;state.sensor={}');
+  assert.match(html,/<div class="dock"><button class="primary start" id="start-journey">开始第 1 天漫游<\/button><\/div>/);
+  assert.equal(docks(html),1);
+  // 进行中：打卡和去这一站的导航并排，都是走在路上最常按的。
+  html=await show('journey',"state.session={id:'s1',trip_id:'trip-edit',day:1,status:'active',current_index:1,model_consent:false}");
+  assert.match(html,/<div class="now-actions dock"><button class="primary" id="checkin">逛完了，去下一站<\/button><a class="secondary" href="[^"]*uri\.amap\.com\/navigation[^"]*mode=walk[^"]*"[^>]*>导航<\/a><\/div>/);
+  assert.equal(docks(html),1);
+  // 全部打卡完：坞里换成「结束并看手记」，页面上不再有第二个结束按钮。
+  html=await show('journey','state.session.current_index=3');
+  assert.match(html,/<div class="dock"><button class="primary" id="end-journey">结束并看手记<\/button><\/div>/);
+  assert.equal((html.match(/id="end-journey"/g)||[]).length,1);
+  assert.equal(docks(html),1);
+  // 身体不适暂停后不催人打卡：没有坞，「结束漫游」仍在原处。
+  html=await show('journey',"state.session.current_index=1;state.session.status='paused'");
+  assert.equal(docks(html),0);
+  assert.doesNotMatch(html,/id="checkin"/);
+  assert.match(html,/id="end-journey">结束漫游/);
+});
