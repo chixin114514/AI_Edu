@@ -5,7 +5,7 @@ import { normalizePoi, normalizeRegions } from '../server/providers.js';
 import { buildReroute, evaluate } from '../server/planner.js';
 import { dispatch } from './harness.js';
 const input={city:'上海',date:'2026-10-15',days:1,budget:300,walk_limit_km:6,interests:['自然','人文'],start_time:'09:00',end_time:'18:00',companion:'独自',model_consent:false,start_poi:'auto'};
-function setup(t,{empty=false,mapFailure=false,huge=false,district=false}={}){
+function setup(t,{empty=false,mapFailure=false,huge=false,district=false,unreachable=false,poiFailure=false}={}){
  const oldEnv={...process.env},oldFetch=globalThis.fetch,calls=[];
  Object.assign(process.env,{DATA_MODE:'live',AMAP_MAPS_API_KEY:'dynamic-'+Math.random(),AMAP_MIN_INTERVAL_MS:'0'});
  const app=createApp({database:':memory:'});let cookie='';
@@ -13,11 +13,15 @@ function setup(t,{empty=false,mapFailure=false,huge=false,district=false}={}){
   const u=new URL(url);calls.push(u);assert.equal(u.origin,'https://restapi.amap.com');let d;
   if(u.pathname==='/v3/config/district'){const name=u.searchParams.get('keywords');d=name==='中国'?{districts:[{level:'country',districts:[{name:'上海市',adcode:'310000',level:'province',districts:[{name:'上海城区',adcode:'310100',level:'city',districts:[{name:'黄浦区',adcode:'310101',level:'district'},{name:'徐汇区',adcode:'310104',level:'district'}]}]}]}]}:{districts:name.includes('上海')?[{name:'上海市',adcode:'310000',level:'province',center:'121.47,31.23'}]:[]};}
   else if(u.pathname==='/v5/place/text'){
+   if(poiFailure)return new Response(JSON.stringify({status:'0',infocode:'10012',info:'private-upstream-response'}));
    assert.equal(u.searchParams.get('region'),district?'310101':'310000');assert.equal(u.searchParams.get('city_limit'),'true');
    d={pois:empty?[]:Array.from({length:18},(_,i)=>({id:'SH'+i,name:i>=15?'上海餐厅'+i:i>=11?'上海博物馆'+i:'上海公园'+i,type:i>=15?'餐饮服务':i>=11?'科教文化服务;博物馆':'风景名胜;公园广场;公园',typecode:i>=15?'050000':i>=11?'140100':'110101',adcode:district&&i===17?'310104':'310101',location:`${121.47+i*.001},31.23`,address:'上海测试街道',business:{opentime_today:'09:00-17:00',cost:'100',rating:'4.5'}}))};
   }else if(u.pathname==='/v3/direction/walking'){
    if(mapFailure)throw Error('secret upstream failure');
-   d={route:{paths:[{distance:huge?'99999':'200',duration:'180',steps:[]}]}};
+   assert.ok(u.searchParams.get('origin').split(',').every(n=>/^\d+(\.\d{1,6})?$/.test(n)));
+   assert.ok(u.searchParams.get('destination').split(',').every(n=>/^\d+(\.\d{1,6})?$/.test(n)));
+   if(typeof unreachable==='string'&&u.searchParams.get('destination')==='121.471,31.23')return new Response(JSON.stringify({status:'0',infocode:unreachable}));
+   d={route:{paths:unreachable&&u.searchParams.get('destination')==='121.471,31.23'?[]:[{distance:huge?'99999':'200',duration:'180',steps:[]}]}};
   }else if(u.pathname==='/v3/weather/weatherInfo'){assert.equal(u.searchParams.get('city'),'310000');d={lives:[{weather:'晴',temperature:'24',reporttime:'2026-10-12 15:00:00'}]};}
   else throw Error('Unexpected provider '+u.pathname);
   return new Response(JSON.stringify({status:'1',...d}));
@@ -110,6 +114,22 @@ test('no POI or no feasible route never silently falls back to Hangzhou fixtures
 });
 test('map outage leaves no incomplete trip or route library',async t=>{
  const {request}=setup(t,{mapFailure:true});const r=await request('/trip/plan',input);assert.equal(r.status,503);assert.deepEqual((await request('/trips')).body.trips,[]);assert.ok(!r.body.error.includes('secret'));
+});
+test('an unreachable POI is skipped while other verified walking stops still form a trip',async t=>{
+ const {request}=setup(t,{unreachable:true});const r=await request('/trip/plan',input);
+ assert.equal(r.status,201);assert.ok(r.body.days[0].stops.length>=2);
+ assert.ok(r.body.days[0].stops.every(stop=>stop.id!=='SH1'));
+ assert.ok(r.body.days[0].skipped.some(stop=>stop.id==='SH1'&&stop.reason==='未查到可用步行路线'));
+});
+for(const code of ['20800','20801','20802','20803'])test(`walking unreachability ${code} does not abort a usable city itinerary`,async t=>{
+ const {request}=setup(t,{unreachable:code});const r=await request('/trip/plan',input);
+ assert.equal(r.status,201);assert.ok(r.body.days[0].stops.length>=2);
+ assert.ok(r.body.days[0].stops.every(stop=>stop.id!=='SH1'));
+});
+test('planning exposes POI permission errors and their stage without saving an incomplete trip',async t=>{
+ const {request}=setup(t,{poiFailure:true});const r=await request('/trip/plan',input);
+ assert.equal(r.status,503);assert.match(r.body.error,/景点检索/);assert.match(r.body.error,/AMAP_10012/);
+ assert.doesNotMatch(r.body.error,/private-upstream-response/);assert.deepEqual((await request('/trips')).body.trips,[]);
 });
 test('walk limit rejects provider routes exceeding budget',async t=>{
  const {request}=setup(t,{huge:true});assert.equal((await request('/trip/plan',input)).status,422);

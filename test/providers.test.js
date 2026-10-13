@@ -37,9 +37,19 @@ test('admin and ordinary state inputs use the same Jev call, rule outcome and co
 });
 
 test('admin map and weather probes make fresh requests even in demo mode and update status',async t=>{
-  const calls={maps:0,weather:0};
+  const calls={maps:0,weather:0,regions:0,pois:0};
   setup(t,async url=>{
     const u=new URL(url);
+    if(u.pathname==='/v3/config/district'){
+      calls.regions++;
+      return response({status:'1',districts:u.searchParams.get('keywords')==='中国'?
+        [{level:'country',districts:[{name:'浙江省',adcode:'330000',districts:[{name:'杭州市',adcode:'330100',level:'city',districts:[{name:'西湖区',adcode:'330106',level:'district'}]}]}]}]:
+        [{name:'杭州市',adcode:'330100',level:'city',center:'120.15,30.25'}]});
+    }
+    if(u.pathname==='/v5/place/text'){
+      calls.pois++;
+      return response({status:'1',pois:[{id:'P1',name:'杭州公园',type:'风景名胜;公园',typecode:'110101',adcode:'330106',location:'120.15,30.25'}]});
+    }
     if(u.pathname==='/v3/direction/walking'){
       calls.maps++;assert.equal(u.searchParams.get('origin'),'120.1481,30.2596');
       return response({status:'1',route:{paths:[{distance:'820',duration:'660',steps:[]}]}});
@@ -61,7 +71,8 @@ test('admin map and weather probes make fresh requests even in demo mode and upd
     else assert.equal(r.body.result.temperature,24);
     for(const secret of [process.env.AMAP_MAPS_API_KEY,process.env.QWEATHER_API_KEY])assert.ok(!JSON.stringify(r.body).includes(secret));
   }
-  assert.deepEqual(calls,{maps:3,weather:3});assert.equal(process.env.DATA_MODE,'demo');
+  assert.deepEqual(calls,{maps:3,weather:3,regions:4,pois:6});assert.equal(process.env.DATA_MODE,'demo');
+  assert.deepEqual((await probeProvider('maps')).checks.map(check=>check.name),['城市查询','区县查询','景点检索','步行路线']);
   const ops=await dispatch(app,'/api/ops',undefined,{cookie});
   assert.equal(ops.body.provider_status.maps.status,'ok');assert.equal(ops.body.provider_status.weather.status,'ok');
 });
@@ -119,6 +130,29 @@ test('weather explicitly falls back to Amap; total outage returns unavailable wi
 });
 test('Amap recognizes supplied MCP key name and normalizes walking response',async t=>{
   setup(t,async(url)=>{assert.equal(new URL(url).searchParams.get('key'),process.env.AMAP_MAPS_API_KEY);return response({status:'1',route:{paths:[{distance:'820',duration:'660',steps:[{polyline:'120.1,30.2;120.11,30.21'}]}]}});});const r=await leg({lng:120.1,lat:30.2},{lng:120.11,lat:30.21});assert.equal(r.distance_m,820);assert.equal(r.duration_min,11);assert.equal(r.polyline.length,2);
+});
+test('walking coordinates respect six decimal places for geolocation and floating point POIs',async t=>{
+  setup(t,async url=>{
+    const u=new URL(url);
+    assert.equal(u.searchParams.get('origin'),'120.148123,30.259654');
+    assert.equal(u.searchParams.get('destination'),'120.141123,30.256654');
+    return response({status:'1',route:{paths:[{distance:'820',duration:'660',steps:[]}]}});
+  });
+  assert.equal((await leg({lng:120.1481234567,lat:30.259654321},{lng:120.1411234567,lat:30.256654321})).distance_m,820);
+});
+test('map probe catches POI permission failures even when the walking API succeeds',async t=>{
+  setup(t,async url=>{
+    const u=new URL(url);
+    if(u.pathname==='/v3/direction/walking')return response({status:'1',route:{paths:[{distance:'820',duration:'660',steps:[]}]}});
+    if(u.pathname==='/v3/config/district')return response({status:'1',districts:u.searchParams.get('keywords')==='中国'?
+      [{level:'country',districts:[{name:'浙江省',adcode:'330000',districts:[{name:'杭州市',adcode:'330100',level:'city'}]}]}]:
+      [{name:'杭州市',adcode:'330100',level:'city',center:'120.15,30.25'}]});
+    return response({status:'0',infocode:'10012',info:'private-provider-key'});
+  });
+  assert.equal((await leg({lng:120.1481,lat:30.2596},{lng:120.141,lat:30.2564})).mode,'live');
+  const result=await probeProvider('maps');
+  assert.equal(result.ok,false);assert.equal(result.error_code,'AMAP_10012');assert.match(result.message,/景点检索/);
+  assert.equal(providerStatus().maps.status,'error');assert.ok(!JSON.stringify(result).includes('private-provider-key'));
 });
 test('Amap missing distance is rejected instead of coerced into zero',async t=>{setup(t,async()=>response({status:'1',route:{paths:[{distance:null,duration:100}]}}));await assert.rejects(leg({lng:120,lat:30},{lng:121,lat:31}));assert.equal(providerStatus().maps.status,'error');});
 test('DeepSeek uses JSON mode and configured model; malformed/empty output falls back',async t=>{

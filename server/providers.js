@@ -29,12 +29,31 @@ function record(name,status,error_code=null) {
   checks.set(name,{status,error_code,checked_at:new Date().toISOString()});
 }
 function providerError(code) { const e=new Error(code); e.providerCode=code; return e; }
-function errorCode(e) {
+export function providerErrorCode(e) {
   // Never echo raw upstream errors, request URLs, headers, keys or model input.
   if(e.providerCode) return e.providerCode;
   if(e.name==='TimeoutError'||e.name==='AbortError')return 'TIMEOUT';
   const code=e.cause?.code;
   return ['EAI_AGAIN','ENOTFOUND','ECONNREFUSED','ECONNRESET','ENETUNREACH','EPERM','EACCES'].includes(code)?code:'NETWORK_OR_RESPONSE_ERROR';
+}
+export function mapFailureDetails(error) {
+  const code=providerErrorCode(error);
+  const stages={'/v3/config/district':'城市与区县查询','/v5/place/text':'景点检索','/v3/direction/walking':'步行路线查询'};
+  const stage=stages[error.providerEndpoint]||'行程规划';
+  let reason='请求失败，请稍后重试';
+  if(code==='NOT_CONFIGURED')reason='未配置高德 Web服务 Key';
+  else if(code==='TIMEOUT')reason='请求超时，请稍后重试';
+  else if(code==='AMAP_10001'||code==='AMAP_10009')reason='请检查高德 Web服务 Key 是否有效及服务类型';
+  else if(['AMAP_10003','AMAP_10044','AMAP_10045'].includes(code))reason='高德调用额度已用完，请检查控制台配额';
+  else if(['AMAP_10004','AMAP_10014','AMAP_10015','AMAP_10019','AMAP_10020','AMAP_10021','AMAP_10029'].includes(code))reason='高德请求频率受限，请稍后重试';
+  else if(/^AMAP_100/.test(code))reason='请检查高德控制台的接口权限与访问限制';
+  else if(code==='NO_WALKING_ROUTE')reason='未查到可用步行路线，请调整起终点';
+  else if(code==='NO_POIS')reason='所选城市没有检索到有效景点，请调整目的地';
+  else if(code==='CITY_NOT_FOUND')reason='未找到唯一城市，请选择完整城市名称';
+  else if(code==='INVALID_RESPONSE'||code==='INVALID_JSON')reason='高德返回的数据不完整，请稍后重试';
+  else if(code==='AMAP_20000')reason='高德拒绝了请求参数';
+  else if(['EPERM','EACCES','ECONNREFUSED','ECONNRESET','ENETUNREACH','ENOTFOUND','EAI_AGAIN'].includes(code))reason='请检查运行服务的设备网络与代理';
+  return {code,stage,reason,message:`${stage}失败：${reason}（${code}）。`};
 }
 function origin(base) {
   let u; try {u=new URL(base);} catch {throw providerError('INVALID_BASE_URL');}
@@ -46,9 +65,9 @@ async function json(url,{headers={},body,timeout=8000}={}) {
   if(!r.ok)throw providerError('HTTP_'+r.status);
   try {return await r.json();}catch{throw providerError('INVALID_JSON');}
 }
-async function monitored(name,fn) {
+async function monitored(name,fn,endpoint) {
   try {const data=await fn();record(name,'ok');return data;}
-  catch(e){record(name,'error',errorCode(e));throw e;}
+  catch(e){if(endpoint&&!e.providerEndpoint)e.providerEndpoint=endpoint;record(name,'error',providerErrorCode(e));throw e;}
 }
 function number(value) {
   if(value===null||value===undefined||value===''||typeof value==='boolean')throw providerError('INVALID_RESPONSE');
@@ -58,7 +77,7 @@ function cached(key) {const v=cache.get(key);return v&&v.expires>Date.now()?v.va
 function save(key,value,ttl=300000) {if(cache.size>500)cache.clear();cache.set(key,{value,expires:Date.now()+ttl});return value;}
 function fingerprint(key) {return createHash('sha256').update(key||'').digest('hex').slice(0,16);}
 async function amap(path,params,{cacheable=true}={}) {
-  const key=amapKey();if(!key)throw providerError('NOT_CONFIGURED');
+  const key=amapKey();if(!key)throw Object.assign(providerError('NOT_CONFIGURED'),{providerEndpoint:path});
   const cacheKey='amap:'+fingerprint(key)+path+JSON.stringify(params);
   const old=cacheable&&cached(cacheKey);if(old)return old;
   const u=new URL('https://restapi.amap.com'+path);
@@ -78,7 +97,7 @@ async function amap(path,params,{cacheable=true}={}) {
     }
   });
   amapQueue=run.catch(()=>{});
-  return run;
+  try{return await run;}catch(error){error.providerEndpoint=path;throw error;}
 }
 export async function resolveLocation({lat,lng,accuracy}) {
   return monitored('maps',async()=>{
@@ -116,23 +135,23 @@ export function normalizeRegions(provinces) {
   const districts=items=>items.flatMap(p=>p.level==='district'?[p]:p.level==='city'?p.districts||[]:[]).filter(p=>p.level==='district'&&valid(p)).map(({name,adcode})=>({name,adcode})).sort((a,b)=>a.adcode.localeCompare(b.adcode));
   return provinces.filter(valid).map(p=>({name:p.name,adcode:p.adcode,cities:['北京市','天津市','上海市','重庆市'].includes(p.name)?[{name:p.name,adcode:p.adcode,districts:districts(p.districts||[])}]:(p.districts||[]).filter(c=>c.level==='city'&&valid(c)).map(c=>({name:c.name,adcode:c.adcode,districts:districts(c.districts||[])})).sort((a,b)=>a.adcode.localeCompare(b.adcode))})).filter(p=>p.cities.length).sort((a,b)=>a.adcode.localeCompare(b.adcode));
 }
-export async function regionOptions() {
-  if(!liveMode())return {provinces:[{name:'浙江省',adcode:'330000',cities:[{name:'杭州市',adcode:'330100',districts:[]}]}],source:'演示城市'};
-  const d=await amap('/v3/config/district',{keywords:'中国',subdistrict:3,extensions:'base'});
+export async function regionOptions({fresh=false}={}) {
+  if(!liveMode()&&!fresh)return {provinces:[{name:'浙江省',adcode:'330000',cities:[{name:'杭州市',adcode:'330100',districts:[]}]}],source:'演示城市'};
+  const d=await amap('/v3/config/district',{keywords:'中国',subdistrict:3,extensions:'base'},{cacheable:!fresh});
   const provinces=normalizeRegions(d.districts?.find(p=>p.level==='country')?.districts||[]);
   if(!provinces.length)throw providerError('INVALID_RESPONSE');
   return {provinces,source:'高德行政区划'};
 }
-export async function cityRegion(name) {
+export async function cityRegion(name,{fresh=false}={}) {
   return monitored('maps',async()=>{
-    const d=await amap('/v3/config/district',{keywords:name,subdistrict:0,extensions:'base'});
+    const d=await amap('/v3/config/district',{keywords:name,subdistrict:0,extensions:'base'},{cacheable:!fresh});
     const clean=s=>s.replace(/市$/,'');
     const regions=(d.districts||[]).filter(r=>(r.level==='city'||['北京市','上海市','天津市','重庆市'].includes(r.name))&&typeof r.name==='string'&&clean(r.name)===clean(name));
     if(regions.length!==1)throw providerError('CITY_NOT_FOUND');
     const r=regions[0],coords=typeof r.center==='string'?r.center.split(',').map(number):[];
     if(!/^\d{6}$/.test(r.adcode)||coords.length!==2||Math.abs(coords[0])>180||Math.abs(coords[1])>90)throw providerError('INVALID_RESPONSE');
     return {name:r.name,adcode:r.adcode,center:{lng:coords[0],lat:coords[1]}};
-  });
+  },'/v3/config/district');
 }
 function optionalMetric(value,max=Infinity) {
   if(!['number','string'].includes(typeof value)||String(value).trim()==='')return null;
@@ -162,28 +181,37 @@ export function normalizePoi(p,region,index=0) {
     source:'高德POI检索',source_url:`https://uri.amap.com/marker?position=${lng},${lat}&name=${encodeURIComponent(p.name)}&coordinate=gaode&callnative=0`,
     updated_at:new Date().toISOString(),verified:false,confidence:'provider_unverified',rank:index};
 }
-export async function cityPois(region,interests=[]) {
+export async function cityPois(region,interests=[],{fresh=false}={}) {
   return monitored('maps',async()=>{
     const groups=[{types:interests.includes('展览')?'140100|140200|140500|110000':'110000|140100|140200',size:25},{types:'140100|140200|140500',size:15},{types:'050000',size:10}];
     const found=new Map();
     for(const group of groups){
-      const d=await amap('/v5/place/text',{region:region.district_adcode||region.adcode,city_limit:'true',types:group.types,page_size:group.size,page_num:1,show_fields:'business'});
+      const d=await amap('/v5/place/text',{region:region.district_adcode||region.adcode,city_limit:'true',types:group.types,page_size:group.size,page_num:1,show_fields:'business'},{cacheable:!fresh});
       if(!Array.isArray(d.pois))throw providerError('INVALID_RESPONSE');
       for(const raw of d.pois){const p=normalizePoi(raw,region,found.size);if(p&&!found.has(p.id)&&![...found.values()].some(v=>v.name===p.name&&Math.hypot(v.lng-p.lng,v.lat-p.lat)<.001))found.set(p.id,p);}
     }
     return [...found.values()];
-  });
+  },'/v5/place/text');
 }
 export async function leg(a,b) {
   if(!liveMode()) {
     const m=Math.round(Math.hypot((a.lng-b.lng)*96000,(a.lat-b.lat)*111000)*1.25);
     return {distance_m:m,duration_min:Math.ceil(m/65),source:'演示估算 · 非导航数据',mode:'demo',polyline:[]};
   }
-  return monitored('maps',()=>walkingLeg(a,b));
+  return monitored('maps',()=>walkingLeg(a,b),'/v3/direction/walking');
 }
 async function walkingLeg(a,b,{cacheable=true}={}) {
-  const data=await amap('/v3/direction/walking',{origin:`${a.lng},${a.lat}`,destination:`${b.lng},${b.lat}`},{cacheable});
-  const p=data.route?.paths?.[0];if(!p)throw providerError('NO_WALKING_ROUTE');
+  const coordinate=p=>[p.lng,p.lat].map(value=>Number(number(value).toFixed(6))).join(',');
+  let data;
+  try{data=await amap('/v3/direction/walking',{origin:coordinate(a),destination:coordinate(b)},{cacheable});}
+  catch(error){
+    // 高德 20800—20803 分别表示非陆地点、附近无路、道路不连通、距离超出范围。
+    if(['AMAP_20800','AMAP_20801','AMAP_20802','AMAP_20803'].includes(error.providerCode))throw Object.assign(providerError('NO_WALKING_ROUTE'),{providerEndpoint:'/v3/direction/walking'});
+    throw error;
+  }
+  if(!Array.isArray(data.route?.paths))throw providerError('INVALID_RESPONSE');
+  if(!data.route.paths.length)throw Object.assign(providerError('NO_WALKING_ROUTE'),{providerEndpoint:'/v3/direction/walking'});
+  const p=data.route.paths[0];if(!p||typeof p!=='object')throw providerError('INVALID_RESPONSE');
   const distance=number(p.distance),duration=number(p.duration);
   if(distance<0||duration<0)throw providerError('INVALID_RESPONSE');
   return {distance_m:distance,duration_min:Math.ceil(duration/60),source:'高德步行路径规划',mode:'live',polyline:(p.steps||[]).flatMap(s=>(s.polyline||'').split(';').filter(Boolean).map(p=>p.split(',').map(Number))).filter(p=>p.length===2&&p.every(Number.isFinite))};
@@ -293,23 +321,39 @@ export async function qweatherNow({fresh=false}={}) {
     return save(cacheKey,{...result,attributions:Array.isArray(result.attributions)?result.attributions.filter(x=>typeof x==='string'&&x.startsWith('https://')):[],source:'和风天气实况（杭州，非旅行日期预报）',source_url:'https://www.qweather.com/',mode:'live',api_version:version});
   });
 }
-export async function probeProvider(name) {
-  const started=performance.now();let result=null,error_code=null,message;
+export async function probeProvider(name,{city='杭州市'}={}) {
+  const started=performance.now();let result=null,error_code=null,message,stage=null;
+  const checks=[];
+  const check=async(label,fn)=>{
+    stage=label;
+    try{const result=await fn();checks.push({name:label,ok:true});return result;}
+    catch(error){checks.push({name:label,ok:false,error_code:providerErrorCode(error)});throw error;}
+  };
   try {
     if(name==='maps') {
-      const route=await monitored('maps',()=>walkingLeg({lng:120.1481,lat:30.2596},{lng:120.1410,lat:30.2564},{cacheable:false}));
+      const region=await check('城市查询',()=>cityRegion(city,{fresh:true}));
+      await check('区县查询',()=>regionOptions({fresh:true}));
+      const catalog=await check('景点检索',async()=>{
+        const pois=await cityPois(region,[],{fresh:true});
+        if(!pois.length)throw providerError('NO_POIS');
+        return pois;
+      });
+      const route=await check('步行路线',()=>monitored('maps',()=>walkingLeg({lng:120.1481,lat:30.2596},{lng:120.1410,lat:30.2564},{cacheable:false})));
       result={distance_m:route.distance_m,duration_min:route.duration_min};
-      message=`杭州西湖步行路线请求成功：${route.distance_m} 米，约 ${route.duration_min} 分钟。`;
+      message=`${region.name}城市、区县及景点检索成功（${catalog.length} 个地点）；杭州参考步行路线 ${route.distance_m} 米，约 ${route.duration_min} 分钟。`;
     } else if(name==='weather') {
       const now=await qweatherNow({fresh:true});
       result={condition:now.condition,temperature:now.temperature,updated_at:now.updated_at};
       message=`杭州天气实况请求成功：${now.condition}，${now.temperature}°C。`;
     } else throw providerError('INVALID_PROVIDER');
   } catch(e) {
-    error_code=errorCode(e);
-    message=error_code==='NOT_CONFIGURED'?'尚未配置服务，请检查服务器配置。':error_code==='TIMEOUT'?'服务连接超时，请稍后重试。':'服务测试失败，请根据错误码检查配置或网络。';
+    error_code=providerErrorCode(e);
+    if(name==='maps'){
+      record('maps','error',error_code);
+      message=`${stage||'地图服务'}测试失败：${mapFailureDetails(e).reason}（${error_code}）。`;
+    }else message=error_code==='NOT_CONFIGURED'?'尚未配置服务，请检查服务器配置。':error_code==='TIMEOUT'?'服务连接超时，请稍后重试。':'服务测试失败，请根据错误码检查配置或网络。';
   }
-  return {provider:name,ok:!error_code,elapsed_ms:Math.round(performance.now()-started),checked_at:new Date().toISOString(),error_code,message,result};
+  return {provider:name,ok:!error_code,elapsed_ms:Math.round(performance.now()-started),checked_at:new Date().toISOString(),error_code,message,result,...(name==='maps'?{checks}:{})};
 }
 // 分钟级降水：未来 2 小时、5 分钟粒度（免费版可用，已实测）。
 // location 用行程所在地的经纬度；城市级精度即可，不是用户的精确位置。

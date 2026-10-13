@@ -386,7 +386,7 @@ test('管理员主动测试按钮显示等待、成功及失败结果，并防�
     assert.match(b.node('#app').innerHTML,/测试中/);assert.equal((b.node('#app').innerHTML.match(/ disabled/g)||[]).length,2);
     await clickNode(b,{dataset:{providerTest:'weather'}});assert.equal(calls.length,1);
   }finally{resolveProbe({ok:true,json:async()=>({provider:'maps',ok:true,elapsed_ms:123,checked_at:'2026-10-12T10:00:00Z',message:'步行路径返回 820 米，约 11 分钟。'})});await pending;}
-  assert.deepEqual(calls,[{provider:'maps'}]);assert.match(b.node('#app').innerHTML,/测试成功/);assert.match(b.node('#app').innerHTML,/820 米/);assert.match(b.node('#app').innerHTML,/123 ms/);
+  assert.deepEqual(calls,[{provider:'maps',city:'杭州市'}]);assert.match(b.node('#app').innerHTML,/测试成功/);assert.match(b.node('#app').innerHTML,/820 米/);assert.match(b.node('#app').innerHTML,/123 ms/);
   resolveProbe=null;const weather=clickNode(b,{dataset:{providerTest:'weather'}});
   for(let i=0;i<20&&!resolveProbe;i++)await Promise.resolve();
   resolveProbe({ok:true,json:async()=>({provider:'weather',ok:false,error_code:'HTTP_403',message:'<script>失败</script>',elapsed_ms:50})});await weather;

@@ -12,7 +12,7 @@ import { routeMap } from './maps.js';
 import { pois, byId } from './pois.js';
 import { pageRoutes } from '../public/page-routes.js';
 import { createPlan, evaluate, buildReroute, ensure, HttpError, clock, minutes, readPoint, rebuildDay } from './planner.js';
-import { decision, liveMode, providerFlags, providerStatus, probeProvider, resolveLocation, cityOptions, cityRegion, regionOptions, qweatherMinutely, qweatherAlerts, transitRoutes, searchPlaces, openTopoElevations, poeticSummary } from './providers.js';
+import { decision, liveMode, providerFlags, providerStatus, probeProvider, mapFailureDetails, resolveLocation, cityOptions, cityRegion, regionOptions, qweatherMinutely, qweatherAlerts, transitRoutes, searchPlaces, openTopoElevations, poeticSummary } from './providers.js';
 import { gcj02ToWgs84, routePoints, buildElevationProfile } from './elevation.js';
 import { JOURNAL_LIMITS, parsePhotoDataUrl, photoUrl, cleanJournalText, entryKey } from './journal.js';
 const root=fileURLToPath(new URL('../public/',import.meta.url));
@@ -193,7 +193,12 @@ export function createApp({database=process.env.DATABASE_PATH||'./data/manxing.s
         return send({packs:[...packs.values()]});
       }
       if(path==='/api/trip/plan'&&req.method==='POST'){
-        let trip;try{trip=await createPlan(b);}catch(e){if(e instanceof HttpError)throw e;throw new HttpError(503,'地图服务不可用，未生成未经验证的实况路线；请检查配置或使用演示模式。');}
+        let trip;try{trip=await createPlan(b);}catch(e){
+          if(e instanceof HttpError)throw e;
+          const detail=mapFailureDetails(e);
+          console.error('Trip planning failed:',JSON.stringify({stage:detail.stage,error_code:detail.code}));
+          throw new HttpError(503,detail.message);
+        }
         return send(put('trip',trip),201);
       }
       if(/^\/api\/trip\/[^/]+\/stops$/.test(path)&&req.method==='POST'){
@@ -362,7 +367,8 @@ export function createApp({database=process.env.DATABASE_PATH||'./data/manxing.s
       if(path==='/api/ops'&&req.method==='GET')return send({providers:providerFlags(),provider_status:providerStatus()});
       if(path==='/api/ops/test'&&req.method==='POST'){
         ensure(['maps','weather'].includes(b.provider),'仅支持测试地图或天气服务');
-        return send(await probeProvider(b.provider));
+        if(b.city!==undefined)ensure(typeof b.city==='string'&&/^[\p{Script=Han}·]{2,30}$/u.test(b.city.trim()),'请输入有效城市名称');
+        return send(await probeProvider(b.provider,{city:b.city?.trim()||'杭州市'}));
       }
       if(path==='/api/privacy/delete'&&req.method==='POST'){ensure(b.confirm===true,'请确认删除');watch.revokeOwner(owner);store.deleteOwner(owner);return send({deleted:true});}
       throw new HttpError(404,'接口不存在');

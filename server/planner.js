@@ -67,7 +67,12 @@ export async function schedule(ids,preferences,date,startAt,origin,catalog){
   for(const id of ids){
     if(catalog&&stops.length>=6)break;
     const p=catalog?catalog.find(p=>p.id===id):byId(id);if(!p||p.closed_days.includes(day)){skipped.push({id,reason:'开放日限制'});continue;}
-    const transit=prev?await leg(prev,p):{distance_m:0,duration_min:0,source:'起点',mode:liveMode()?'live':'demo',polyline:[]};
+    let transit;
+    try{transit=prev?await leg(prev,p):{distance_m:0,duration_min:0,source:'起点',mode:liveMode()?'live':'demo',polyline:[]};}
+    catch(error){
+      if(error.providerCode==='NO_WALKING_ROUTE'){skipped.push({id,reason:'未查到可用步行路线'});continue;}
+      throw error;
+    }
     const arrival=Math.max(time+transit.duration_min,p.open?minutes(p.open):time);
     const departure=arrival+p.duration_min;
     if(departure>Math.min(p.close?minutes(p.close):1440,minutes(preferences.end_time)-20)||cost+(p.price??0)>preferences.budget/preferences.days||walk+transit.distance_m>preferences.walk_limit_km*1000){skipped.push({id,reason:'超出已知营业、费用、时间或步行约束'});continue;}

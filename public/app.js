@@ -777,7 +777,7 @@ async function testOpsProvider(name){
   try{
     if(state.page==='ops')await render();
     if(revision!==accountRevision)return;
-    const result=await api('/ops/test',{provider:name});
+    const result=await api('/ops/test',{provider:name,...(name==='maps'?{city:state.planCity}:{})});
     if(revision===accountRevision)(state.providerTests??={})[name]=result;
   }catch(e){if(revision===accountRevision)(state.providerTests??={})[name]={ok:false,message:e.message};}
   finally{if(revision===accountRevision){state.providerTesting=null;if(state.page==='ops')await render();}}
