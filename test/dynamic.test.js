@@ -5,7 +5,7 @@ import { normalizePoi, normalizeRegions } from '../server/providers.js';
 import { buildReroute, evaluate } from '../server/planner.js';
 import { dispatch } from './harness.js';
 const input={city:'上海',date:'2026-10-15',days:1,budget:300,walk_limit_km:6,interests:['自然','人文'],start_time:'09:00',end_time:'18:00',companion:'独自',model_consent:false,start_poi:'auto'};
-function setup(t,{empty=false,mapFailure=false,huge=false,district=false,unreachable=false,poiFailure=false}={}){
+function setup(t,{empty=false,mapFailure=false,huge=false,district=false,unreachable=false,poiFailure=false,blockedPrefix=false,blockedAnchor=false,originDetour=false,disconnectedCluster=false,poiCount=18}={}){
  const oldEnv={...process.env},oldFetch=globalThis.fetch,calls=[];
  Object.assign(process.env,{DATA_MODE:'live',AMAP_MAPS_API_KEY:'dynamic-'+Math.random(),AMAP_MIN_INTERVAL_MS:'0'});
  const app=createApp({database:':memory:'});let cookie='';
@@ -15,13 +15,17 @@ function setup(t,{empty=false,mapFailure=false,huge=false,district=false,unreach
   else if(u.pathname==='/v5/place/text'){
    if(poiFailure)return new Response(JSON.stringify({status:'0',infocode:'10012',info:'private-upstream-response'}));
    assert.equal(u.searchParams.get('region'),district?'310101':'310000');assert.equal(u.searchParams.get('city_limit'),'true');
-   d={pois:empty?[]:Array.from({length:18},(_,i)=>({id:'SH'+i,name:i>=15?'上海餐厅'+i:i>=11?'上海博物馆'+i:'上海公园'+i,type:i>=15?'餐饮服务':i>=11?'科教文化服务;博物馆':'风景名胜;公园广场;公园',typecode:i>=15?'050000':i>=11?'140100':'110101',adcode:district&&i===17?'310104':'310101',location:`${121.47+i*.001},31.23`,address:'上海测试街道',business:{opentime_today:'09:00-17:00',cost:'100',rating:'4.5'}}))};
+   d={pois:empty?[]:Array.from({length:poiCount},(_,i)=>({id:'SH'+i,name:i>=15?'上海餐厅'+i:i>=11?'上海博物馆'+i:'上海公园'+i,type:i>=15?'餐饮服务':i>=11?'科教文化服务;博物馆':'风景名胜;公园广场;公园',typecode:i>=15?'050000':i>=11?'140100':'110101',adcode:district&&i===17?'310104':'310101',location:`${121.47+i*.001},31.23`,address:'上海测试街道',business:{opentime_today:'09:00-17:00',cost:'100',rating:'4.5'}}))};
+   if(disconnectedCluster)for(let i=11;i<d.pois.length;i++)d.pois[i].location=`${121.6+(i-11)*.001},31.23`;
   }else if(u.pathname==='/v3/direction/walking'){
    if(mapFailure)throw Error('secret upstream failure');
    assert.ok(u.searchParams.get('origin').split(',').every(n=>/^\d+(\.\d{1,6})?$/.test(n)));
    assert.ok(u.searchParams.get('destination').split(',').every(n=>/^\d+(\.\d{1,6})?$/.test(n)));
    if(typeof unreachable==='string'&&u.searchParams.get('destination')==='121.471,31.23')return new Response(JSON.stringify({status:'0',infocode:unreachable}));
-   d={route:{paths:unreachable&&u.searchParams.get('destination')==='121.471,31.23'?[]:[{distance:huge?'99999':'200',duration:'180',steps:[]}]}};
+   const originLng=Number(u.searchParams.get('origin').split(',')[0]),destinationLng=Number(u.searchParams.get('destination').split(',')[0]);
+   const blocked=(blockedPrefix&&destinationLng<121.48)||(blockedAnchor&&(originLng===121.47||destinationLng===121.47))||(disconnectedCluster&&(originLng<121.55||destinationLng<121.55));
+   const distance=huge?'99999':originDetour&&destinationLng===121.47?'950':'200';
+   d={route:{paths:blocked||(unreachable&&u.searchParams.get('destination')==='121.471,31.23')?[]:[{distance,duration:'180',steps:[]}]}};
   }else if(u.pathname==='/v3/weather/weatherInfo'){assert.equal(u.searchParams.get('city'),'310000');d={lives:[{weather:'晴',temperature:'24',reporttime:'2026-10-12 15:00:00'}]};}
   else throw Error('Unexpected provider '+u.pathname);
   return new Response(JSON.stringify({status:'1',...d}));
@@ -41,6 +45,33 @@ test('generated route library survives reads and is isolated by browser owner',a
 });
 test('two-day generated routes have no duplicate main stops and obey limits',async t=>{
  const {request}=setup(t);const r=await request('/trip/plan',{...input,days:2});assert.equal(r.status,201);const ids=r.body.days.flatMap(d=>d.stops.map(p=>p.id));assert.equal(new Set(ids).size,ids.length);for(const d of r.body.days){assert.ok(d.stops.length>=2);assert.ok(d.distance_m<=6000);assert.ok(d.stops.every(p=>p.departure<='18:00'));}
+});
+test('two-day planning redistributes feasible stops instead of consuming them all on day one',async t=>{
+ const {request}=setup(t,{poiCount:4});const r=await request('/trip/plan',{...input,days:2});
+ assert.equal(r.status,201);assert.ok(r.body.days.every(day=>day.stops.length>=2));
+ const ids=r.body.days.flatMap(day=>day.stops.map(stop=>stop.id));assert.equal(ids.length,4);assert.equal(new Set(ids).size,4);
+});
+test('planning searches beyond the first ten candidates before declaring the day impossible',async t=>{
+ const {request}=setup(t,{blockedPrefix:true});const r=await request('/trip/plan',input);
+ assert.equal(r.status,201);assert.ok(r.body.days[0].stops.length>=2);
+ assert.ok(r.body.days[0].distance_m<=input.walk_limit_km*1000);
+});
+test('automatic planning retries a different first stop when its initial anchor has no walking connections',async t=>{
+ const {request}=setup(t,{blockedAnchor:true});const r=await request('/trip/plan',input);
+ assert.equal(r.status,201);assert.ok(r.body.days[0].stops.length>=2);
+ assert.ok(r.body.days[0].stops.every(stop=>stop.id!=='SH0'));
+});
+test('anchor retries preserve an explicit origin and its walking budget',async t=>{
+ const {request}=setup(t,{originDetour:true});const start={name:'酒店',lng:121.469,lat:31.23};
+ const r=await request('/trip/plan',{...input,start_point:start,walk_limit_km:1});
+ assert.equal(r.status,201);assert.ok(r.body.days[0].stops.length>=2);
+ assert.notEqual(r.body.days[0].stops[0].id,'SH0');assert.deepEqual(r.body.preferences.start_point,start);
+ assert.equal(r.body.days[0].stops[0].leg.distance_m,200);assert.ok(r.body.days[0].distance_m<=1000);
+});
+test('planning considers another neighborhood when the densest POI cluster is disconnected',async t=>{
+ const {request}=setup(t,{disconnectedCluster:true});const r=await request('/trip/plan',input);
+ assert.equal(r.status,201);assert.ok(r.body.days[0].stops.length>=2);
+ assert.ok(r.body.days[0].stops.every(stop=>stop.lng>=121.6));
 });
 test('city rerouting stays in the same catalog and requires confirmation',async t=>{
  const {request}=setup(t),p=(await request('/trip/plan',input)).body,s=(await request('/session/start',{trip_id:p.id,day:1,model_consent:false})).body;

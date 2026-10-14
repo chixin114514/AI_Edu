@@ -83,18 +83,24 @@ export async function schedule(ids,preferences,date,startAt,origin,catalog){
   return {stops,skipped,distance_m:walk,cost,unknown_cost_count:stops.filter(p=>p.price===null).length,duration_min:stops.length?minutes(stops.at(-1).departure)-(startAt??minutes(preferences.start_time)):0};
 }
 export const approximateDistance=(a,b)=>Math.hypot((a.lng-b.lng)*111000*Math.cos((a.lat+b.lat)*Math.PI/360),(a.lat-b.lat)*111000);
-export function orderCandidates(catalog,prefs,origin){
+function rankedAnchors(catalog,prefs,origin){
+  const sights=catalog.filter(p=>p.category!=='美食');
+  const pool=sights.length?sights:catalog;
+  if(origin)return [...pool].sort((a,b)=>approximateDistance(origin,a)-approximateDistance(origin,b));
+  const score=p=>pool.filter(q=>approximateDistance(p,q)<2500).length*2+(prefs.interests.includes(p.category)?3:0)-p.rank/100;
+  return [...pool].sort((a,b)=>score(b)-score(a));
+}
+export function orderCandidates(catalog,prefs,origin,{limit=10,anchor:requestedAnchor}={}){
   const pool=[...catalog],ordered=[];
   if(!pool.length)return [];
   // Select a compact neighborhood before ordering. Straight distance ranks candidates only;
   // every accepted walking leg is subsequently measured by the map provider.
   let previous=origin;
-  if(!previous){
-    const score=p=>pool.filter(q=>q.category!=='美食'&&approximateDistance(p,q)<2500).length*2+(prefs.interests.includes(p.category)?3:0)-p.rank/100;
-    const anchor=[...pool].filter(p=>p.category!=='美食').sort((a,b)=>score(b)-score(a))[0]||pool[0];
+  if(requestedAnchor||!previous){
+    const anchor=pool.find(p=>p.id===requestedAnchor)||rankedAnchors(pool,prefs)[0];
     ordered.push(anchor.id);pool.splice(pool.indexOf(anchor),1);previous=anchor;
   }
-  while(pool.length&&ordered.length<10){
+  while(pool.length&&ordered.length<limit){
     pool.sort((a,b)=>(approximateDistance(previous,a)-(prefs.interests.includes(a.category)?250:0))-(approximateDistance(previous,b)-(prefs.interests.includes(b.category)?250:0)));
     const next=pool.shift();
     if(next.category==='美食'&&(!prefs.interests.includes('美食')||ordered.some(id=>catalog.find(p=>p.id===id)?.category==='美食')))continue;
@@ -118,6 +124,33 @@ async function scheduleWithLunch(ordered,prefs,date,origin,catalog){
   const withMeal=[...ordered.slice(0,noonAt),food.p.id,...ordered.slice(noonAt)];
   const next=await schedule(withMeal,prefs,date,undefined,origin,catalog);
   return next.stops.length>=base.stops.length?next:base;
+}
+
+async function scheduleAutomaticDay(catalog,prefs,date,origin){
+  const locked=catalog.filter(p=>p.confidence==='user_locked');
+  const rest=catalog.filter(p=>p.confidence!=='user_locked');
+  const orderingOrigin=origin||locked.at(-1)||undefined;
+  const order=anchor=>[...locked.map(p=>p.id),...orderCandidates(rest,prefs,orderingOrigin,{limit:rest.length,anchor})];
+  const initial=order();
+  let best=await scheduleWithLunch(initial,prefs,date,origin,catalog);
+  if(best.stops.length>=2)return best;
+
+  // 首站可能在水域、封闭园区或断开的路网上。尝试其他片区，再尝试同片区其他首站。
+  // 自定义起点始终作为实际出发点计算，必去节点仍排在前面。
+  const first=rest.find(p=>p.id===initial[locked.length]);
+  const ranked=rankedAnchors(rest,prefs,orderingOrigin).filter(p=>p.id!==first?.id);
+  const alternatives=[];
+  for(const point of ranked){
+    if((!first||approximateDistance(first,point)>750)&&alternatives.every(p=>approximateDistance(p,point)>750))alternatives.push(point);
+    if(alternatives.length===3)break;
+  }
+  for(const point of ranked){if(alternatives.length===3)break;if(!alternatives.some(p=>p.id===point.id))alternatives.push(point);}
+  for(const point of alternatives){
+    const attempt=await scheduleWithLunch(order(point.id),prefs,date,origin,catalog);
+    if(attempt.stops.length>best.stops.length)best=attempt;
+    if(best.stops.length>=2)return best;
+  }
+  return best;
 }
 
 // 自定义终点（P1）：作为最后一站接在行程末尾，并计入步行总量。
@@ -264,15 +297,25 @@ async function dynamicPlan(prefs){
   for(let i=0;i<prefs.days;i++){
     const date=new Date(Date.parse(prefs.date+'T00:00:00Z')+i*86400000).toISOString().slice(0,10);
     const candidates=pool.filter(p=>!visited.has(p.id));
-    // 必去节点排在最前，避免被就近排序或约束挤掉；其余仍按就近顺序编排
-    const locked=candidates.filter(p=>p.confidence==='user_locked');
-    const rest=candidates.filter(p=>p.confidence!=='user_locked');
-    const ordered=[...locked.map(p=>p.id),...orderCandidates(rest,prefs,origin||locked.at(-1)||undefined)];
     // 传当天未访问的候选，避免用餐插入选中前一日已用过的地点
-    const scheduled=await scheduleWithLunch(ordered,prefs,date,origin,candidates);
-    // 终点只接在最后一天
+    let scheduled=await scheduleAutomaticDay(candidates,prefs,date,origin);
+    // 两日行程不能因为第一天先占满可行地点，就把第二天误判为无解。
+    if(i===1&&scheduled.stops.length<2&&days[0].stops.length>2){
+      const previous=days[0],release=Math.min(2,previous.stops.length-2);
+      const kept=previous.stops.slice(0,-release).map(stop=>stop.id);
+      const shorter=await schedule(kept,prefs,previous.date,undefined,origin,pool);
+      if(shorter.stops.length>=2){
+        const reserved=new Set(shorter.stops.map(stop=>stop.id));
+        const redistributed=await scheduleAutomaticDay(pool.filter(p=>!reserved.has(p.id)),prefs,date,origin);
+        if(redistributed.stops.length>=2){
+          days[0]={...previous,...shorter};visited.clear();reserved.forEach(id=>visited.add(id));
+          scheduled=redistributed;
+        }
+      }
+    }
+    ensure(scheduled.stops.length>=2,`第${i+1}天未找到至少两个满足步行和时间约束的地点，请减少天数或放宽约束`,422);
+    // 终点只接在最后一天，不把回酒店当作第二个游览地点。
     const main=(i===prefs.days-1)?await appendDestination(scheduled,destination):scheduled;
-    ensure(main.stops.length>=2,`第${i+1}天未找到至少两个满足步行和时间约束的地点，请减少天数或放宽约束`,422);
     main.stops.forEach(p=>{if(p.id!=='destination')visited.add(p.id);});
     for(const item of main.skipped.filter(s=>String(s.id).startsWith('must-'))){
       const poi=(prefs.must_visit||[]).find(p=>p.id===item.id);

@@ -465,6 +465,29 @@ test('定位面板勾选后把当前位置作为起终点提交',async()=>{
   assert.deepEqual(plan.body.start_point,{name:'黄浦区',lat:31.23,lng:121.47});
   assert.deepEqual(plan.body.end_point,{name:'返回当前位置',lat:31.23,lng:121.47});
 });
+test('automatic location does not select a walking origin for a different destination',async()=>{
+ const b=toolsBrowser();
+ b.run("state.location={city:'上海市',district:'黄浦区',dynamic_planning:true,position:{lat:31.23,lng:121.47}};applyDestination('四川省','成都市')");
+ assert.doesNotMatch(b.run('locationResult()'),/id="use-start-point" checked/);
+});
+test('current-position choices survive page redraws and stay unchecked until selected',async()=>{
+ const b=toolsBrowser();
+ b.run("state.location={city:'上海市',district:'黄浦区',dynamic_planning:true,position:{lat:31.23,lng:121.47}}");
+ assert.doesNotMatch(b.run('locationResult()'),/id="use-start-point" checked/);
+ await b.handlers.get('#app:change')({target:{id:'use-start-point',checked:true}});
+ assert.match(b.run('locationResult()'),/id="use-start-point" checked/);
+ await b.handlers.get('#app:change')({target:{id:'use-start-point',checked:false}});
+ await b.run('render()');
+ assert.doesNotMatch(b.run('locationResult()'),/id="use-start-point" checked/);
+});
+test('changing destination clears explicit current-position choices instead of carrying a remote origin',async()=>{
+ const b=toolsBrowser();
+ b.run("state.location={city:'上海市',district:'黄浦区',dynamic_planning:true,position:{lat:31.23,lng:121.47}}");
+ await b.handlers.get('#app:change')({target:{id:'use-start-point',checked:true}});
+ await b.handlers.get('#app:change')({target:{id:'use-end-point',checked:true}});
+ await b.handlers.get('#app:change')({target:{name:'city',value:'杭州市'}});
+ assert.doesNotMatch(b.run('locationResult()'),/id="use-(start|end)-point" checked/);
+});
 
 test('行程页能查询公交换乘并显示分段与票价',async()=>{
   const b=toolsBrowser();
