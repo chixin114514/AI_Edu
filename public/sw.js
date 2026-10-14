@@ -1,4 +1,4 @@
-const CACHE='manxing-shell-v34';
+const CACHE='manxing-shell-v35';
 const PAGES=['/','/index.html','/plan','/trip','/journey','/report','/login','/register','/account','/ops'];
 const FILES=[...PAGES,'/page-routes.js','/app.js','/glass.js','/route-map.js','/map-geometry.js','/stop-reasons.js','/sensors.js','/watch-link.js','/style.css','/lake.svg','/favicon.svg','/manifest.json','/icons/icon-192.png','/icons/icon-512.png','/icons/icon-maskable-512.png','/icons/apple-touch-icon.png'];
 self.addEventListener('install',event=>event.waitUntil(caches.open(CACHE).then(cache=>cache.addAll(FILES))));

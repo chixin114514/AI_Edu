@@ -31,6 +31,7 @@ const state={page:'plan',draft,planPending:false,planError:'',planConsent:false,
 applyDestination(draft.province,draft.city,draft.district_adcode,draft.district);
 const sensors=new Sensors();
 let toastTimer,renderVersion=0,lastStateAt=0,locationRequest=0,destinationRevision=0,accountRevision=0,watchAttempt=0;
+let useCurrentStart=false,useCurrentEnd=false;
 const labels={plan:'规划旅程',trip:'我的行程',journey:'途中伴行',report:'旅行手记',ops:'运营工作台',auth:'登录与注册'};
 function toast(message){$('#toast').textContent=message;$('#toast').classList.add('visible');clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('#toast').classList.remove('visible'),4000);}
 // Only planning preferences are persisted; permissions and sensor readings are never draft data.
@@ -129,13 +130,13 @@ function locationResult(){
   if(state.locationMessage)return `<p class="loc-text">${esc(state.locationMessage)}</p>`;
   const l=state.location;if(!l)return '<p class="loc-text">还没有定位</p>';
   const note=!l.supported_city?'演示模式只能规划杭州':l.applied?'已设为目的地':l.preserved_manual?'目的地保持你选的不变':'';
-  return `<p class="loc-text"><strong>${esc(l.city)} · ${esc(l.district)}</strong>${note?`<span class="loc-note">${note}</span>`:''}</p><p class="loc-sub">${esc(l.address)}${typeof l.elevation==='number'?` · 海拔约 ${l.elevation} 米`:''}</p>${l.nearby?.length?`<p class="loc-sub">附近：${l.nearby.map(p=>esc(p.name)).join('、')}</p>`:''}${l.dynamic_planning&&l.position?`<div class="loc-toggles"><label class="toggle-chip"><input type="checkbox" id="use-start-point" checked><span>从这里出发</span></label><label class="toggle-chip"><input type="checkbox" id="use-end-point"><span>结束回到这里</span></label></div>`:''}`;
+  return `<p class="loc-text"><strong>${esc(l.city)} · ${esc(l.district)}</strong>${note?`<span class="loc-note">${note}</span>`:''}</p><p class="loc-sub">${esc(l.address)}${typeof l.elevation==='number'?` · 海拔约 ${l.elevation} 米`:''}</p>${l.nearby?.length?`<p class="loc-sub">附近：${l.nearby.map(p=>esc(p.name)).join('、')}</p>`:''}${l.dynamic_planning&&l.position?`<div class="loc-toggles"><label class="toggle-chip"><input type="checkbox" id="use-start-point"${useCurrentStart?' checked':''}><span>从这里出发</span></label><label class="toggle-chip"><input type="checkbox" id="use-end-point"${useCurrentEnd?' checked':''}><span>结束回到这里</span></label></div>`:''}`;
 }
 function paintLocation(){if($('#location-result'))$('#location-result').innerHTML=locationResult();for(const id of ['#locate-plan','#locate']){const b=$(id);if(b){b.disabled=state.locating;b.textContent=state.locating?'定位中…':'重新定位';}}}
-function clearLocation(){locationRequest++;state.location=null;state.locationMessage='定位已清除。';state.locating=false;paintLocation();}
+function clearLocation(){locationRequest++;state.location=null;useCurrentStart=false;useCurrentEnd=false;state.locationMessage='定位已清除。';state.locating=false;paintLocation();}
 async function recognizeLocation({automatic=false}={}){
   if(state.locating)return;
-  const request=++locationRequest;state.locating=true;state.location=null;state.locationMessage='正在获取位置，请允许浏览器定位…';paintLocation();
+  const request=++locationRequest;state.locating=true;state.location=null;useCurrentStart=false;useCurrentEnd=false;state.locationMessage='正在获取位置，请允许浏览器定位…';paintLocation();
   // Hold the original form reference so a delayed response cannot change a different page's form.
   const form=$('#plan-form'),revision=destinationRevision;
   let preserveDraft=false;
@@ -847,6 +848,9 @@ async function startMotionByDefault(){
 }
 $('#app').addEventListener('change',e=>{
   if(rememberControlField(e.target))return;
+  if(e.target.id==='use-start-point'){useCurrentStart=e.target.checked;return;}
+  if(e.target.id==='use-end-point'){useCurrentEnd=e.target.checked;return;}
+  if(['province','city'].includes(e.target.name)){useCurrentStart=false;useCurrentEnd=false;paintLocation();}
   if(e.target.name==='transit-from'||e.target.name==='transit-to'){
     // 选「自定义」时保持已搜索到的点不动，等用户重新搜索。
     if(e.target.value==='custom')return;
