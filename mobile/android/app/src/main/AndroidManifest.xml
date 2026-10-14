@@ -34,11 +34,14 @@
                 android:resource="@xml/file_paths"></meta-data>
         </provider>
 
-        <!-- 漫游进行中的前台服务：锁屏或切后台后继续记录心率与定位 -->
+        <!-- 漫游进行中的前台服务：锁屏或切后台后继续记录心率与定位。
+             必须声明类型（Android 14 起强制），且每种类型都要求对应的运行时权限已经授予，
+             否则 startForeground() 会抛 SecurityException 把 App 带崩。这里声明两种，
+             由 KeepAlivePlugin 按实际已授予的权限挑选一种传进去。 -->
         <service
             android:name=".KeepAliveService"
             android:exported="false"
-            android:foregroundServiceType="connectedDevice" />
+            android:foregroundServiceType="connectedDevice|location" />
     </application>
 
     <!-- Permissions -->
@@ -55,9 +58,10 @@
     <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
 
-    <!-- 前台服务：漫游中保持后台记录（type=connectedDevice，配合 BLUETOOTH_CONNECT） -->
+    <!-- 前台服务：漫游中保持后台记录（type=connectedDevice 配合蓝牙，location 配合定位） -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <!-- Android 13+ 显示前台服务的常驻通知 -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 

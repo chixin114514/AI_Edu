@@ -29,11 +29,9 @@ export async function installNativeBridges() {
   return status;
 }
 
-// 不用顶层 await：目标环境是 Android 系统 WebView，保持 es2020 兼容。
-// installNativeBridges 的第一句 applyEnv() 在任何 await 之前同步执行，
-// 因此 /api/config 首次请求一定读到最新配置；原生适配层随后就位即可，
-// 它是用户在界面上点“识别位置/连接设备”时才用到的。
-installNativeBridges().then(status => {
+// 启动模块等待适配层就绪，随后前端自动识别位置会使用原生定位。
+export const nativeReady = installNativeBridges().then(status => {
   globalThis.__manxingNative = status;
   console.log('[manxing] 原生适配层就绪', status);
+  return status;
 });

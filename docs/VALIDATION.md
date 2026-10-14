@@ -300,3 +300,18 @@ TypeSafe正式请求格式、概率校验、模型授权阻断、超时／401／
 - 自动定位不再默认勾选「从这里出发」。手动选择的起终点选项在页面重绘时保留，重新定位、清除定位或更换城市时清除，避免把当前所在地带进另一城市的步行规划。PWA 缓存更新到 v35。
 - 动态规划 28 项、前端 47 项、核心流程 16 项、手动行程编辑 11 项，共 **102 项通过**；`npm run check` 通过。覆盖候选截断、第一站不通、断开的密集片区、保留自定义起点与 1 公里上限、四个可行地点按两天分配、定位勾选重绘，以及原有不满足真实约束时返回 422 的行为。
 - 真实青岛黄岛区两日请求已通过本地诊断脚本尝试，但执行环境在第一个城市查询处阻止代理连接（`EPERM`）。本轮真实高德线路尚未验证；可复现的算法误拒绝已经由修复前后的接口结果确认。
+
+## 安卓「开始漫游」闪退修复（2026-10-13，分支 fix/android-network）
+
+- **现象**：行程规划完成后点「开始漫游 → 我知道了，开始」，应用直接闪退。
+- **根因**：`POST /api/session/start` 之后设备端会启动前台服务（`mobile/src/bridge.js` 的 `syncKeepAlive`）。Android 14 起，前台服务类型要求**对应的运行时权限已经授予**，而且必须在调用 `startForeground()` **之前**就满足。官方原文：未满足启动前台服务的运行时要求时，系统会抛出 `SecurityException`，「这样可以阻止前台服务启动，**可能会导致应用崩溃**」。服务里写死了 `FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE`，而它要求已授予 `BLUETOOTH_CONNECT`／`BLUETOOTH_SCAN`／`BLUETOOTH_ADVERTISE` 之一；用户还没连心率带、没给过蓝牙权限，于是 `startForeground` 抛异常，异常逃出 `onStartCommand` → 进程崩溃。JS 层的 `try/catch` 接不住 Java 崩溃，所以前端只能看到闪退。
+- **修复**（4 个文件）：
+  1. 清单同时声明 `connectedDevice|location` 两种类型，并补上 `FOREGROUND_SERVICE_LOCATION` 权限；
+  2. 插件按**实际已授予**的权限算出可用类型，一个都不能用时**干脆不启动服务**并把原因回给前端 —— 不能先启动再失败，因为 `startForegroundService` 未按期前台化同样会让应用崩掉；
+  3. 服务类型改由插件通过 `EXTRA_TYPES` 传入，服务不再自己假定；`startForeground` 外面套 `try/catch`，失败就 `stopSelf()` 并记录日志；
+  4. 设置面板的「前台服务保活」不再一律显示「已就绪」，未启动时显示原因。
+- **顺带的效果**：漫游途中本来就在记录位置，所以只要用户给过定位权限（页面打开时会自动请求一次），`location` 这条路就足以保活 —— 没连心率带也不会因此失去后台记录能力。
+- **验证**：`npm run check` 通过；`cd mobile && npm test` **32 项**通过（新增 1 项原生静态用例）。这个环境没有 adb 与模拟器，无法真机复现，因此用「静态校验原生源码与清单」兜住回归：一旦有人改回无条件使用 `connectedDevice`，用例会失败。
+- **APK 侧核对**：合并后清单为 `foregroundServiceType="connectedDevice|location"`；`aapt2` 读包内二进制清单得 `foregroundServiceType=0x18`（= connectedDevice `0x10` \| location `0x08`），三个 `FOREGROUND_SERVICE*` 权限都在；`assets/public/manxing-native.js` 与 `mobile/www/` 字节一致，且包含新的保活分支与设置面板告警。
+- **未验证**：**没有在实体安卓机上复测**。按官方文档这次的改动消除了「权限未授予仍调用 `startForeground`」这条崩溃路径，但真机上是否还存在其它崩溃点需要装机验证；也仍未确认真机上后台保活的实际效果。
+- **补充**：`KeepAliveService.java` 与 `KeepAlivePlugin.java` 在 `master` 与 `fix/android-network` 上**完全一致**，所以这个 bug 在 `master` 上同样存在，本提交可以直接 cherry-pick 过去。

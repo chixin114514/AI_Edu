@@ -26,6 +26,8 @@ npm run dev
 
 手机访问需要 HTTPS，配置方法见下节；设备不支持传感器时仍可用手动反馈。
 
+Android 安装包使用 `mobile/` 的 Capacitor 外壳，内置本地后端，无需连接电脑 IP。构建、服务配置与网络自检见 [Android App 说明](mobile/README.md)。
+
 ### HTTPS 与手机访问
 
 应用可直接提供 HTTPS，无需额外反向代理。安装 OpenSSL 1.1.1+ 后，生成本地开发证书（将示例 IP 换成电脑实际局域网 IP）：

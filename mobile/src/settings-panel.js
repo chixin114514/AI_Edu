@@ -2,6 +2,7 @@
 // 密钥只存在本机 localStorage，不打进 APK；填好后重新加载即可进入实况模式。
 // 用运行时注入 DOM 的方式实现，不改动 public/ 里的任何文件。
 import { readConfig, saveConfig, clearConfig, applyEnv, isLive, hasBuiltInDefaults } from './env-config.js';
+import { networkDiagnostics } from './network-diagnostics.js';
 
 const FIELDS = [
   { key: 'AMAP_MAPS_API_KEY', label: '高德 Web服务 Key', type: 'password', hint: '必填才能识别城市、检索真实地点与步行路径' },
@@ -40,6 +41,9 @@ function renderBody(current) {
     ${rows}
     <p style="font-size:11px;color:#8b9585;margin:16px 0 0">${esc(status)}</p>
     ${hasBuiltInDefaults() ? '<p style="font-size:11px;color:#8b9585;margin:6px 0 0">安装包内置了一份默认配置（上面已填充）。「清除全部密钥」只会清掉本机填写的内容，默认配置仍然生效。</p>' : ''}
+    <h3 style="font-size:13px;margin:20px 0 7px">网络自检</h3>
+    <button class="secondary" type="button" id="mx-env-network">检查连接</button>
+    <pre id="mx-env-network-out" style="display:none;font-size:11px;line-height:1.9;background:#f6f8f9;border-radius:8px;padding:12px;margin:12px 0 0;white-space:pre-wrap;word-break:break-word"></pre>
     <h3 style="font-size:13px;margin:20px 0 7px">设备自检</h3>
     <p style="font-size:11px;color:#8b9585;margin:0 0 10px">确认这台手机上的蓝牙、定位、加速度计和后台保活是否可用。</p>
     <button class="secondary" type="button" id="mx-env-diag">运行自检</button>
@@ -56,7 +60,10 @@ async function runDiagnostics() {
   lines.push(`安全上下文        ${mark(globalThis.isSecureContext)}（蓝牙与定位的前提）`);
   lines.push(`网页蓝牙接口      ${mark(!!globalThis.navigator?.bluetooth)}${globalThis.navigator?.bluetooth ? '' : '  ← 未安装适配层'}`);
   lines.push(`定位接口          ${mark(!!globalThis.navigator?.geolocation)}`);
-  lines.push(`前台服务保活      ${globalThis.__manxingKeepAlive ? '✓ 已就绪' : '✗ 未安装（非 App 环境？）'}`);
+  // 保活要先看有没有启动成功：权限不足时原生层会拒绝启动（否则会崩），
+  // 那种情况下不能显示"已就绪"，要给出原因。
+  const alive = globalThis.__manxingKeepAlive, aliveReason = alive?.reason?.();
+  lines.push(`前台服务保活      ${alive ? (aliveReason ? `⚠ 未启动：${aliveReason}` : '✓ 已就绪') : '✗ 未安装（非 App 环境？）'}`);
   lines.push(`后台趋势保留      ${globalThis.__manxingKeepBackgroundTrends ? '✓ 开启' : '✗ 关闭（网页端行为）'}`);
 
   const motion = await new Promise(resolve => {
@@ -124,6 +131,11 @@ export function installSettingsPanel() {
         message.textContent = '已保存。正在重新加载以生效…';
       }
       setTimeout(() => globalThis.location?.reload(), 700);
+    } else if (target.id === 'mx-env-network') {
+      if(target.disabled)return;
+      const out=dialog.querySelector('#mx-env-network-out');target.disabled=true;
+      try{out.style.display='block';out.textContent='正在检查连接…';out.textContent=await networkDiagnostics();}
+      finally{target.disabled=false;}
     } else if (target.id === 'mx-env-diag') {
       const out = dialog.querySelector('#mx-env-diag-out');
       if (!out) return;
