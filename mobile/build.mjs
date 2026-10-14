@@ -2,11 +2,12 @@
 //
 // 1. 打包 server/index.js（连同 planner/pois/providers/maps），用 shims/ 顶掉 node:* 与 SQLite
 // 2. 打包 fetch 拦截桥
-// 3. 复制 public/ 作为界面，并在 index.html 里把两个脚本插到 app.js 之前
+// 3. 复制 public/，为每个页面安装顺序启动模块，再加载前端
 import { build } from 'esbuild';
-import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, readFile, rm } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import { prepareMobileEntries } from './html-entry.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const at = (...parts) => path.join(here, ...parts);
@@ -62,6 +63,7 @@ await rm(WWW, { recursive: true, force: true });
 await mkdir(WWW, { recursive: true });
 
 // 界面：直接复用 public/，保证与网页端同一份代码
+await import('../scripts/build-pages.js');
 await cp(at('..', 'public'), WWW, { recursive: true });
 // 桌面/网页端才需要的 Service Worker 在 App 内会造成缓存陈旧，移除后注册会静默失败
 await rm(at('www', 'sw.js'), { force: true });
@@ -70,15 +72,8 @@ await build({ ...common, entryPoints: [at('src/backend.js')], outfile: at('www',
 await build({ ...common, entryPoints: [at('src/native-bridge.js')], outfile: at('www', 'manxing-native.js') });
 await build({ ...common, entryPoints: [at('src/bridge.js')], outfile: at('www', 'manxing-api-bridge.js') });
 
-// 把两个脚本插到 app.js 之前：模块按文档顺序执行，bridge 会早于 app.js 运行
-const indexPath = at('www', 'index.html');
-let html = await readFile(indexPath, 'utf8');
-const anchor = '<script type="module" src="/app.js"></script>';
-if (!html.includes(anchor)) throw new Error('index.html 里没有找到 app.js 入口，无法注入本地后端');
-html = html.replace(anchor, '<script type="module" src="/manxing-backend.js"></script>'
-  + '<script type="module" src="/manxing-native.js"></script>'
-  + '<script type="module" src="/manxing-api-bridge.js"></script>' + anchor);
-await writeFile(indexPath, html);
+// 独立页面与首页都安装启动模块，避免页面刷新后落回 WebView 的 /api 请求。
+await prepareMobileEntries(WWW);
 
 const defaultKeys = Object.keys(builtInDefaults).filter(k => builtInDefaults[k]);
 console.log(`[build] www/ 就绪：已注入本地后端；内置默认配置 ${defaultKeys.length} 项${defaultKeys.length ? `（${defaultKeys.join('、')}）` : ''}`);

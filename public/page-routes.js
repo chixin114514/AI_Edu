@@ -16,5 +16,7 @@ export function resolvePageRoute(pathname='/',hash=''){
   const path=pathname.replace(/\/+$/,'')||'/';
   if(path==='/'||path==='/index.html')return pageRoutes.plan;
   if(path==='/auth')return pageRoutes.login;
+  const entry=/^\/pages\/([a-z]+)\.html$/.exec(path);
+  if(entry&&Object.hasOwn(pageRoutes,entry[1]))return pageRoutes[entry[1]];
   return Object.values(pageRoutes).find(route=>route.path===path)||null;
 }

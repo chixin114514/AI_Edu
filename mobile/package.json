@@ -6,7 +6,7 @@
   "description": "慢行 MANXING 移动端：把后端整个搬进 App，无需服务器",
   "scripts": {
     "build": "node build.mjs",
-    "test": "node build.mjs && node test/backend.test.mjs && node test/native.test.mjs && node test/live-mode.test.mjs",
+    "test": "node build.mjs && node test/network.test.mjs && node test/backend.test.mjs && node test/native.test.mjs && node test/live-mode.test.mjs",
     "serve": "python3 -m http.server 4173 --directory www",
     "apk": "node build.mjs && npx cap sync android && npm run clean:android && cd android && ANDROID_HOME=${ANDROID_HOME:-/opt/homebrew/share/android-commandlinetools} ./gradlew assembleDebug",
     "clean:android": "find android/app/src -name '* *' -delete; rm -rf android/app/build android/build"
