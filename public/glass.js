@@ -11,7 +11,7 @@ function roundedRect(ctx,x,y,width,height,radius){
 // 位移图：R 通道管水平偏移、G 通道管垂直偏移，中性灰（0.5）表示不偏移。
 // 整块先铺上从 0 到 1 的渐变，再用一块虚化的中性灰盖住中间，只留一圈边缘在折射——像一块凸起的玻璃。
 // 画成位图而不是 SVG：滤镜每一帧都要用到它，位图只解码一次，矢量图每帧都得重画（里面还带一道模糊）。
-function displacementMap(width,height,rim=14){
+function displacementMap(width,height,rim=12){
   const canvas=document.createElement('canvas');canvas.width=width;canvas.height=height;
   const ctx=canvas.getContext('2d');if(!ctx)return '';
   const radius=Math.min(height/2,32);

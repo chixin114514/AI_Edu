@@ -883,3 +883,185 @@ test('手记页等接口返回期间保留原来的内容，不立刻换成加�
   assert.match(b.node('#app').innerHTML,/途中发生了什么/);
   assert.doesNotMatch(b.node('#app').innerHTML,/行程安排/);
 });
+
+test('管理员停在运营页时退出登录，只收起菜单里的运营入口，页面内容还在',async()=>{
+  const b=browser({fetch:async url=>({ok:true,json:async()=>url==='/api/ops'?{providers:{},provider_status:{}}:{}})});
+  const main=b.node('#app'),entry={hidden:true,dataset:{page:'ops'},classList:{toggle(){}},setAttribute(){},removeAttribute(){}};
+  const hiddenWrites=[];
+  Object.defineProperty(main,'hidden',{get:()=>false,set:value=>hiddenWrites.push(value)});
+  // 真实页面里 <main id="app"> 自己也带 data-page，停在运营页时同样匹配不加限定的 [data-page="ops"]。
+  b.run('document').querySelectorAll=selector=>selector.split(',').some(part=>part.trim().startsWith('[data-page="ops"]'))?[main,entry]:[entry];
+  b.run("state.user={id:'admin-id',username:'admin',role:'admin'};state.page='ops'");
+  await b.run('render()');
+  assert.equal(entry.hidden,false,'管理员能看到运营入口');
+  assert.match(main.innerHTML,/服务连接状态/);
+  await b.run("(async()=>{await switchAccount(null);navigate('login');})()");
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(entry.hidden,true,'退出后入口收起');
+  assert.ok(!hiddenWrites.includes(true),'主内容区不能被一起隐藏，否则退出后整页空白');
+  assert.match(main.innerHTML,/欢迎回来/);
+});
+
+// ---------------- 排版改版：限定语一句不少，不靠装饰撑场面 ----------------
+
+test('票价没核实时花费写「待核实」且不承诺预算；都核实了才显示金额',async()=>{
+  const b=editBrowser();
+  b.run("state.trip.days[0].unknown_cost_count=2;state.trip.days[0].cost=137;");
+  await b.run("(async()=>{state.page='trip';await render();})()");
+  let html=b.node('#app').innerHTML;
+  assert.match(html,/<dt>花费<\/dt><dd><strong class="word">待核实<\/strong><\/dd>/);
+  assert.match(html,/<p class="note">2 处价格未知，预算 ¥300 暂不能保证。<\/p>/,'说清有几处没核实，也不承诺预算');
+  assert.doesNotMatch(html,/免费/,'没核实的票价不能写成免费');
+  assert.doesNotMatch(html,/¥137/,'已知部分的小计不能单独摆出来当总花费');
+  b.run("state.trip.days[0].unknown_cost_count=0;");
+  await b.run('render()');
+  html=b.node('#app').innerHTML;
+  assert.match(html,/<dt>花费<\/dt><dd><strong>¥137<\/strong><span class="note">预算 ¥300<\/span><\/dd>/);
+  assert.doesNotMatch(html,/待核实|暂不能保证|价格未知/);
+});
+
+test('服务端随行程下发的核实事项原文列在「出发前核实」里，没有就不出现这一节',async()=>{
+  const warnings=['营业时间、票价和预约要求尚未核实；未知费用不视为免费，暂不能保证总预算。','停留时长为规划估计，室内属性按地点类别推断；雨天候选需核实后使用。','<b>不当标签</b>'];
+  const b=editBrowser();
+  await b.run("(async()=>{state.page='trip';await render();})()");
+  assert.doesNotMatch(b.node('#app').innerHTML,/出发前核实/);
+  b.run('state.trip.warnings=[]');
+  await b.run('render()');
+  assert.doesNotMatch(b.node('#app').innerHTML,/出发前核实/,'空清单不留一个空标题');
+  b.run('state.trip.warnings='+JSON.stringify(warnings));
+  await b.run('render()');
+  const section=b.node('#app').innerHTML.match(/<h2 class="section-title">出发前核实<\/h2><ul class="checks">([\s\S]*?)<\/ul>/);
+  assert.ok(section,'核实事项单独成节');
+  // 一条不少、一字不改；只做转义。
+  assert.deepEqual([...section[1].matchAll(/<li>([\s\S]*?)<\/li>/g)].map(match=>match[1]),warnings.map(text=>b.run(`esc(${JSON.stringify(text)})`)));
+  assert.doesNotMatch(section[1],/<b>/);
+});
+
+test('演示行程写明数据是样例、不能用来导航；实况行程没有这句',async()=>{
+  const b=editBrowser();
+  b.run("state.trip.data_mode='demo'");
+  await b.run("(async()=>{state.page='trip';await render();})()");
+  assert.match(b.node('#app').innerHTML,/<p class="notice">演示数据：距离、时间和天气都是样例，不能用来导航。<\/p>/);
+  b.run("state.trip.data_mode='live'");
+  await b.run('render()');
+  assert.doesNotMatch(b.node('#app').innerHTML,/演示数据|不能用来导航/);
+});
+
+test('顶栏标出现在看的是演示数据还是实时数据',()=>{
+  const b=browser();
+  b.node('#mode-pill').hidden=true;
+  b.run('paintMode()');
+  assert.equal(b.node('#mode-pill').hidden,true,'配置没拿到之前不乱标');
+  b.run("state.config={data_mode:'demo'};paintMode()");
+  assert.equal(b.node('#mode-pill').textContent,'演示数据');
+  assert.equal(b.node('#mode-pill').dataset.mode,'demo');
+  assert.equal(b.node('#mode-pill').hidden,false);
+  b.run("state.config={data_mode:'live'};paintMode()");
+  assert.equal(b.node('#mode-pill').textContent,'实时数据');
+  assert.equal(b.node('#mode-pill').dataset.mode,'live');
+});
+
+test('身体状态面板写明读数只用来提醒，不用于诊断',async()=>{
+  const b=editBrowser();
+  b.run("state.session={id:'s1',trip_id:'trip-edit',day:1,status:'active',current_index:0,model_consent:false};");
+  await b.run("(async()=>{state.page='journey';await render();})()");
+  assert.match(b.node('#app').innerHTML,/<p class="note">只用来提醒你调整节奏，不用于诊断。<\/p>/);
+});
+
+test('公交票价没拿到时写「未知」，只有明确为 0 元才写免费',()=>{
+  const b=browser();
+  const fare=cost=>b.run(`transitResult(${JSON.stringify({options:[{...toolsResponses['/api/transit'].options[0],cost}],source:'高德公交换乘路径规划',updated_at:'2026-10-20T10:00:00Z'})})`);
+  assert.match(fare(null),/票价未知/);
+  assert.doesNotMatch(fare(null),/免费|¥/);
+  assert.match(fare(2),/票价约 ¥2/);
+  assert.match(fare(0),/票价免费/);
+});
+
+test('每站写明停留多久，站与站之间写明要走多久多远；顺序没保存时不显示旧的步行段',async()=>{
+  const b=editBrowser({handler:stopsServer([])});
+  await b.run("(async()=>{state.page='trip';await render();})()");
+  const list=b.node('#app').innerHTML;
+  assert.deepEqual([...list.matchAll(/<li class="leg">([^<]*)<\/li>/g)].map(match=>match[1]),['步行 12 分钟 · 900 m','步行 9 分钟 · 700 m'],'第一站前面没有步行段');
+  assert.deepEqual([...list.matchAll(/<span>(停留 \d+ 分钟)<\/span>/g)].map(match=>match[1]),['停留 45 分钟','停留 45 分钟','停留 60 分钟']);
+  assert.ok(list.indexOf('步行 12 分钟 · 900 m')<list.indexOf('第二站')&&list.indexOf('第二站')<list.indexOf('步行 9 分钟 · 700 m'),'步行段夹在它连接的两站之间');
+  // 换了顺序，旧的步行段对不上新的相邻两站：和到达时间一样先收起，停留时长与顺序无关，留着。
+  await clickNode(b,{id:'',dataset:{stopMove:'1',stop:'p1'}});
+  const pending=b.node('#itinerary').innerHTML;
+  assert.doesNotMatch(pending,/class="leg"/);
+  assert.equal((pending.match(/<span>停留 \d+ 分钟<\/span>/g)||[]).length,3);
+});
+
+test('各页模板不带表情符号；图标只留给没有文字的按钮，而且都有读屏名称',async()=>{
+  const report={finished:true,visited_stops:2,total_stops:3,walked_km:1.8,planned_distance_km:3.1,accepted:1,rejected:1,preference_note:'更愿意少走一点。',data_mode:'demo',
+    events:[{type:'tired',at:'2026-10-20T09:30:00Z',demo:true},{type:'accepted',at:'2026-10-20T09:31:00Z'},{type:'rain',at:'2026-10-20T10:00:00Z'},{type:'checkin',at:'2026-10-20T10:20:00Z'}],
+    summary:{text:'风把湖面吹皱。',source:'DeepSeek deepseek-flash',generated_at:'2026-10-20T12:00:00Z'},
+    journal:[{day:1,stop_name:'第一站',text:'坐了一会儿',photos:[],updated_at:'2026-10-20T09:40:00Z'}]};
+  const b=editBrowser({handler:async url=>{
+    if(url==='/api/trip/trip-edit/report')return {ok:true,json:async()=>report};
+    if(url==='/api/ops')return {ok:true,json:async()=>({providers:{maps:true,weather:false},provider_status:{maps:{status:'ok'},weather:{status:'error',error_code:'HTTP_403'}}})};
+    return null;
+  }});
+  const pages={};
+  const shot=async(name,setup)=>{b.run(setup);await b.run('render()');pages[name]=b.node('#app').innerHTML;};
+  b.run("state.trip.warnings=['营业时间、票价和预约要求尚未核实。'];state.trip.days[0].unknown_cost_count=1;state.trips=[state.trip];");
+  await shot('规划（实况）',"state.page='plan';state.interests=['自然','美食'];state.planStartPoint={name:'测试酒店',lat:31,lng:121};");
+  await shot('规划（演示）',"state.config={data_mode:'demo'};state.planStartPoint=null;");
+  await shot('行程（演示）',"state.page='trip';state.trip.data_mode='demo';");
+  await clickNode(b,{id:'',dataset:{stopDetail:'p2'}});
+  await new Promise(resolve=>setImmediate(resolve));
+  pages['地点详情']=b.node('#modal-content').innerHTML;
+  await shot('行程（实况，顺序未保存）',"state.config={data_mode:'live'};state.trip.data_mode='live';state.stopDetail=null;state.reorder={key:viewKey(),ids:['p2','p1','p3']};");
+  await shot('途中（还没开始）',"state.reorder=null;state.page='journey';state.session=null;");
+  await shot('途中（有调整建议，管理员面板展开）',"state.user={id:'admin',username:'admin',role:'admin'};state.session={id:'s1',trip_id:'trip-edit',day:1,status:'active',current_index:0,model_consent:true};controlsState().open=true;"
+    +"state.suggestion={id:'sg1',demo:true,reason:'建议减少后续节点并延长休息。',decision_source:'rules',expires_at:'2026-10-20T10:00:00Z',candidate:{stops:[editStops[2]]},changes:{distance_saved_m:257,time_saved_min:59,added_stops:['第三站'],skipped_stops:['第二站'],moved_stops:[]}};".replace('editStops[2]',JSON.stringify(editStops[2])));
+  await shot('手记',"state.suggestion=null;state.page='report';");
+  await shot('运营',"state.page='ops';");
+  await shot('账号',"state.page='auth';");
+  await shot('登录',"state.user=null;state.page='auth';state.authMode='login';");
+  await shot('注册',"state.authMode='register';");
+  assert.equal(Object.keys(pages).length,12);
+  for(const [name,html]of Object.entries(pages)){
+    assert.ok(html.length>100,name+' 渲染出了内容');
+    assert.doesNotMatch(html,/没加载出来/,name);
+    assert.doesNotMatch(html,/\p{Extended_Pictographic}/u,name+' 不用表情符号当图标');
+    const icons=(html.match(/<svg class="icon"/g)||[]).length;
+    const labelled=(html.match(/<button[^>]*\saria-label="[^"]+"[^>]*><svg class="icon"[^>]*>(?:<path[^>]*\/>)+<\/svg><\/button>/g)||[]).length;
+    assert.equal(icons,labelled,name+' 的每个图标都是一个带读屏名称、没有文字的按钮');
+  }
+  // 能排序的页面确实带着上移／下移，免得上面的计数因为模板空了而成立。
+  assert.ok((pages['行程（演示）'].match(/<svg class="icon"/g)||[]).length>=6);
+  assert.match(pages['规划（实况）'],/id="clear-start" aria-label="清除起点"/);
+  assert.match(pages['途中（有调整建议，管理员面板展开）'],/id="close-journey-controls"/);
+});
+
+// ---------------- 主按钮坞：每页最要紧的按钮固定在拇指够得着的地方 ----------------
+
+test('规划、行程、途中三页的主按钮都在主按钮坞里，每页只有一个坞；暂停时不出现',async()=>{
+  const b=editBrowser();
+  const docks=html=>(html.match(/class="[^"]*\bdock\b[^"]*"/g)||[]).length;
+  const show=async(page,setup='')=>{await b.run(`(async()=>{${setup};state.page='${page}';await render();})()`);return b.node('#app').innerHTML;};
+  let html=await show('plan');
+  assert.match(html,/<div class="cta-bar dock"><button class="primary generate" type="submit" id="generate-button"/);
+  assert.equal(docks(html),1);
+  html=await show('trip');
+  assert.match(html,/<div class="dock"><button class="primary wide start" id="start-journey">开始漫游<\/button><\/div>/);
+  assert.equal(docks(html),1);
+  // 途中页：还没开始时是「开始」。
+  html=await show('journey','state.session=null;state.sensor={}');
+  assert.match(html,/<div class="dock"><button class="primary start" id="start-journey">开始第 1 天漫游<\/button><\/div>/);
+  assert.equal(docks(html),1);
+  // 进行中：打卡和去这一站的导航并排，都是走在路上最常按的。
+  html=await show('journey',"state.session={id:'s1',trip_id:'trip-edit',day:1,status:'active',current_index:1,model_consent:false}");
+  assert.match(html,/<div class="now-actions dock"><button class="primary" id="checkin">逛完了，去下一站<\/button><a class="secondary" href="[^"]*uri\.amap\.com\/navigation[^"]*mode=walk[^"]*"[^>]*>导航<\/a><\/div>/);
+  assert.equal(docks(html),1);
+  // 全部打卡完：坞里换成「结束并看手记」，页面上不再有第二个结束按钮。
+  html=await show('journey','state.session.current_index=3');
+  assert.match(html,/<div class="dock"><button class="primary" id="end-journey">结束并看手记<\/button><\/div>/);
+  assert.equal((html.match(/id="end-journey"/g)||[]).length,1);
+  assert.equal(docks(html),1);
+  // 身体不适暂停后不催人打卡：没有坞，「结束漫游」仍在原处。
+  html=await show('journey',"state.session.current_index=1;state.session.status='paused'");
+  assert.equal(docks(html),0);
+  assert.doesNotMatch(html,/id="checkin"/);
+  assert.match(html,/id="end-journey">结束漫游/);
+});
